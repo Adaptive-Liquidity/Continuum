@@ -49,9 +49,9 @@ Genesis answers:
 
 ---
 
-### FLOKS-PC — Agent Computers
+### CONTINUUM — Agent Computers
 
-FLOKS-PC provides isolated logical computers and runtime environments for autonomous principals.
+Continuum provides isolated logical computers and runtime environments for autonomous principals.
 
 It connects agents to dedicated or shared Runloop Devboxes with:
 
@@ -63,7 +63,7 @@ It connects agents to dedicated or shared Runloop Devboxes with:
 - Recovery and takeover flows
 - Runtime isolation
 
-FLOKS-PC answers:
+Continuum answers:
 
 > **Where is the agent operating?**
 
@@ -71,7 +71,7 @@ FLOKS-PC answers:
 
 ### AEON-IQ — Persistent Memory
 
-AEON-IQ is an OpenAI-compatible memory proxy for persistent autonomous systems.
+AEON-IQ is a multi-provider-compatible memory proxy for persistent autonomous systems.
 
 It:
 
@@ -195,7 +195,7 @@ The dashboard answers:
 
 ### VERA — Persistent Principal Identity
 
-A **VERA** is a Verifiable Entity with Revocable Authority.
+A **VERA** is a Verifiable Execution and Recovery Assurance
 
 Its identity and responsibility persist across changes to:
 
@@ -262,7 +262,3 @@ Currently, two official plugins are available:
 ## React Compiler
 
 The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
