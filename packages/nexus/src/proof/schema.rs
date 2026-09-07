@@ -1,0 +1,274 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+pub const DEFAULT_PROOF_CAPSULE_LIMITATIONS: &[&str] = &[
+    "runtime_attestation_only",
+    "does_not_prove_correct_execution",
+    "does_not_prove_absence_of_external_side_effects",
+    "does_not_prove_external_side_effects_absent",
+    "does_not_include_raw_snapshot_memory",
+    "does_not_guarantee_full_deterministic_replay",
+    "does_not_restore_stack_or_registers",
+    "execution_state_is_memory_globals_and_table_metadata",
+    "blocked_sync_wasi_io_cancellation_is_cooperative",
+    "trusts_nexus_runtime_and_host_boundary",
+    "proof_trusts_nexus_runtime_and_host_boundary",
+];
+
+pub fn default_proof_capsule_limitations() -> Vec<String> {
+    DEFAULT_PROOF_CAPSULE_LIMITATIONS
+        .iter()
+        .map(|limitation| (*limitation).to_owned())
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypedDigest {
+    pub algorithm: String,
+    pub value: String,
+    pub public_recomputable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DigestMode {
+    Sha256Public,
+    HmacSha256Private,
+    RedactedNoDigest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SnapshotKind {
+    LatestRuntime,
+    EmptyBaseline,
+    Diff,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofSubject {
+    pub run_id: Uuid,
+    pub tool_name: String,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolIdentity {
+    pub module_digest: TypedDigest,
+    pub module_name: String,
+    pub entrypoint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputIdentity {
+    pub digest: TypedDigest,
+    pub media_type: String,
+    pub raw_included: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PolicyEnforcementMode {
+    UnprofiledDev,
+    ProfileValidatedOnly,
+    ProfileLoadedMcp,
+    ProfileEnforcedMcpCapabilitiesOnly,
+    /// RESERVED: never emitted in v1
+    ProfileEnforcedMcpToolAndCapability,
+    /// RESERVED: never emitted in v1
+    ProfileEnforcedRuntime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyProfileRef {
+    pub profile_digest: Option<TypedDigest>,
+    pub profile_name: Option<String>,
+    pub mode: PolicyEnforcementMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityEvidence {
+    pub required: Vec<String>,
+    pub granted: Vec<String>,
+    pub mismatch: Option<Vec<String>>,
+    #[cfg(feature = "aeon-memory")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negotiation_rounds: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotEvidence {
+    pub snapshot_id: Uuid,
+    pub snapshot_kind: SnapshotKind,
+    pub memory_digest: TypedDigest,
+    pub original_size: u64,
+    pub compressed_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureEvidence {
+    pub failure_category: String,
+    pub requires_rollback: bool,
+    pub deterministic: Option<bool>,
+    pub error_summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RollbackEvidence {
+    pub occurred: bool,
+    pub from_snapshot_id: Option<Uuid>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchRaceEvidence {
+    pub source_snapshot_id: Option<Uuid>,
+    pub winner_branch_id: String,
+    pub branches_tried: u32,
+    pub branches_succeeded: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedactionReport {
+    pub hashed_fields: Vec<String>,
+    pub truncated_fields: Vec<String>,
+    pub removed_fields: Vec<String>,
+    pub hmac_fields: Vec<String>,
+}
+
+/// Records whether AEON-IQ memory was consulted and what the result was.
+///
+/// Not feature-gated so non-aeon-memory builds can still reference the type
+/// (e.g. for display or configuration). Fields that carry actual evidence are
+/// gated individually on the `aeon-memory` feature in `ProofCapsule`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MemoryAttestationMode {
+    /// Memory was not configured or not consulted (default).
+    #[default]
+    Advisory,
+    /// Memory was consulted and evidence is cryptographically attested.
+    Attested,
+    /// Memory was queried, an HMAC key was present, and zero hits were found.
+    AttestedNoHit,
+    /// Memory was queried, an HMAC key was present, and hits were found.
+    AttestedWithRecall,
+    /// Memory was consulted but the evidence could not be fully attested.
+    Degraded,
+    /// Memory sidecar is not configured; no HMAC key present.
+    Absent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignatureEnvelope {
+    pub signer: String,
+    pub key_id: String,
+    pub signature: String,
+    pub signed_payload_digest: TypedDigest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofCapsule {
+    pub version: String,
+    pub capsule_id: Uuid,
+    pub subject: ProofSubject,
+    pub tool: ToolIdentity,
+    pub input: InputIdentity,
+    pub policy: PolicyProfileRef,
+    pub capabilities: CapabilityEvidence,
+    pub snapshot: Option<SnapshotEvidence>,
+    pub failure: Option<FailureEvidence>,
+    pub rollback: Option<RollbackEvidence>,
+    pub branches: Option<BranchRaceEvidence>,
+    pub redaction: RedactionReport,
+    pub limitations: Vec<String>,
+    #[cfg(feature = "aeon-memory")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_evidence: Option<aeon_nexus_bridge::MemoryEvidenceRef>,
+    #[cfg(feature = "aeon-memory")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mode: Option<MemoryAttestationMode>,
+    pub signature: Option<SignatureEnvelope>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProofCapsuleBuilder {
+    capsule: ProofCapsule,
+}
+
+impl ProofCapsuleBuilder {
+    pub fn new(
+        tool_name: impl Into<String>,
+        module_digest: TypedDigest,
+        input_digest: TypedDigest,
+    ) -> Self {
+        let tool_name = tool_name.into();
+        let now = Utc::now();
+        Self {
+            capsule: ProofCapsule {
+                version: "1".to_owned(),
+                capsule_id: Uuid::new_v4(),
+                subject: ProofSubject {
+                    run_id: Uuid::new_v4(),
+                    tool_name: tool_name.clone(),
+                    started_at: now,
+                    finished_at: now,
+                    duration_ms: 0,
+                },
+                tool: ToolIdentity {
+                    module_digest,
+                    module_name: tool_name.clone(),
+                    entrypoint: "_start".to_owned(),
+                },
+                input: InputIdentity {
+                    digest: input_digest,
+                    media_type: "application/json".to_owned(),
+                    raw_included: false,
+                },
+                policy: PolicyProfileRef {
+                    profile_digest: None,
+                    profile_name: None,
+                    mode: PolicyEnforcementMode::UnprofiledDev,
+                },
+                capabilities: CapabilityEvidence {
+                    required: Vec::new(),
+                    granted: Vec::new(),
+                    mismatch: None,
+                    #[cfg(feature = "aeon-memory")]
+                    negotiation_rounds: None,
+                },
+                snapshot: None,
+                failure: None,
+                rollback: None,
+                branches: None,
+                redaction: RedactionReport {
+                    hashed_fields: Vec::new(),
+                    truncated_fields: Vec::new(),
+                    removed_fields: Vec::new(),
+                    hmac_fields: vec!["input.digest".to_owned()],
+                },
+                limitations: default_proof_capsule_limitations(),
+                #[cfg(feature = "aeon-memory")]
+                memory_evidence: None,
+                #[cfg(feature = "aeon-memory")]
+                memory_mode: None,
+                signature: None,
+            },
+        }
+    }
+
+    pub fn build(self) -> ProofCapsule {
+        self.capsule
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofScorecard {
+    pub capsule_id: Uuid,
+    pub version: String,
+    pub has_signature: bool,
+    pub has_failure: bool,
+    pub has_rollback: bool,
+    pub redaction_count: usize,
+    pub limitations_count: usize,
+    pub scorecard_pass: bool,
+}

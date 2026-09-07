@@ -1,0 +1,418 @@
+# Nexus CI — runs on every push and PR.
+#
+# Mirrors the harness-upgrade section of the build plan:
+#   1. Install the userspace toolchain (rustup, cargo, hyperfine, wat2wasm).
+#   2. cargo test --all-targets (includes the Phase A regression test).
+#   3. bash validate.sh 0 3 (Phase 0 specs + Phase 3 capture w/ AI verdict gate).
+#   4. clippy -D warnings + cargo audit on the lib + bins.
+#
+# The "AI rescore" step is a separate workflow (.github/workflows/ai-rescore.yml)
+# that runs only on merge to main when recovery-path files change. It costs
+# real LLM tokens so it does not run on PRs.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!dashboard/**"
+      - "!**/*.md"
+      - "crates/aeon_nexus_bridge/schema/recall_envelope_v2/PROTOCOL.md"
+  pull_request:
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!dashboard/**"
+      - "!**/*.md"
+      - "crates/aeon_nexus_bridge/schema/recall_envelope_v2/PROTOCOL.md"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: cargo test + validate phases 0/3
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install hyperfine + wabt
+        run: |
+          curl -fsSL -o /tmp/hf.tgz \
+            "https://github.com/sharkdp/hyperfine/releases/download/v1.18.0/hyperfine-v1.18.0-x86_64-unknown-linux-musl.tar.gz"
+          echo "ef3855ad6a1bf97055a90dc3dfc5d4a48494cb80344027db932a96341d415193  /tmp/hf.tgz" | sha256sum -c -
+          tar -xzf /tmp/hf.tgz -C /tmp
+          sudo install -m 0755 /tmp/hyperfine-v1.18.0-x86_64-unknown-linux-musl/hyperfine /usr/local/bin/
+          curl -fsSL -o /tmp/wabt.tgz \
+            "https://github.com/WebAssembly/wabt/releases/download/1.0.36/wabt-1.0.36-ubuntu-20.04.tar.gz"
+          echo "4aa0929db06c2376cc76f6d9e920dbde2ea6f1fd55bbaed6cd65167e9e39ecd3  /tmp/wabt.tgz" | sha256sum -c -
+          tar -xzf /tmp/wabt.tgz -C /tmp
+          sudo install -m 0755 /tmp/wabt-1.0.36/bin/wat2wasm /usr/local/bin/
+
+      - name: cargo test --all-targets
+        run: cargo test --all-targets --locked
+
+      - name: Phase A regression test
+        run: cargo test --test phase3_distinct_outputs --locked
+
+      - name: validate.sh phases 0 + 3
+        env:
+          CARGO_TARGET_DIR: ./target
+        run: |
+          mkdir -p artifacts/raw artifacts/plots
+          bash scripts/setup_benchmark_env.sh
+          bash scripts/run_phase3_capture.sh
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: validation-artifacts
+          path: |
+            artifacts/specs.json
+            artifacts/raw/phase3_index.json
+            artifacts/raw/phase3_*.json
+
+  clippy:
+    name: clippy + audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: clippy (deny warnings)
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: cargo audit
+        run: |
+          cargo install --locked cargo-audit
+          cargo audit
+
+  aeon-memory-tests:
+    name: aeon-memory-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: cargo test --features aeon-memory
+        run: cargo test --features aeon-memory --all-targets --locked
+      - name: aeon_nexus_bridge tests
+        run: cargo test -p aeon_nexus_bridge --locked
+      - name: no-leak artifact scan
+        run: |
+          cargo build --features aeon-memory --locked --quiet 2>/dev/null || true
+          bin=target/debug/nexus
+          if [ -f "$bin" ]; then
+            if strings "$bin" | grep -qE '(sk-[a-zA-Z0-9]{20,}|AKIA[A-Z0-9]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY)'; then
+              echo "::error::Potential secret pattern found in compiled binary"
+              exit 1
+            fi
+            echo "Artifact scan: no known secret patterns found"
+          else
+            echo "::warning::Binary $bin not found after build, skipping artifact scan"
+          fi
+
+  aeon-memory-clippy:
+    name: aeon-memory-clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: cargo clippy --features aeon-memory
+        run: cargo clippy --features aeon-memory --locked -- -D warnings
+
+  # `aeon-canonical-json-v1` must emit identical bytes whether or not
+  # serde_json's `preserve_order` feature is enabled: any workspace dependency
+  # can turn it on, flipping `serde_json::Map` from a sorted `BTreeMap` to an
+  # insertion-ordered `IndexMap`. The canonicaliser sorts keys explicitly rather
+  # than inheriting `Map` order, and this job is the durable proof of that.
+  #
+  # Without it the `preserve-order-conformance` feature is declared in
+  # crates/aeon_nexus_bridge/Cargo.toml and exercised nowhere -- the default
+  # suite cannot cover it, because the whole point is the non-default build.
+  bridge-preserve-order:
+    name: aeon_nexus_bridge preserve-order conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: cargo test -p aeon_nexus_bridge --features preserve-order-conformance
+        run: |
+          cargo test -p aeon_nexus_bridge \
+            --locked \
+            --features preserve-order-conformance
+
+  # Stage 0.0a items #2 and #3: every feature flag shipped in a release must be
+  # built and tested in CI. Before this job, "mcp-http" and
+  # "tenant-registry-postgres" appeared nowhere in .github/ — roughly 2,200
+  # lines of HTTP transport, per-tenant auth, rate limiting and registry code,
+  # plus their own tests, were never compiled, linted or run.
+  #
+  # "mcp-http" is tested on its own as well as with aeon-memory: the two differ
+  # in which items are reachable, and a registry-only helper left on the bare
+  # mcp-http gate is exactly the dead-code regression this matrix is here to
+  # catch.
+  mcp-http-tests:
+    name: mcp-http (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - "mcp-http"
+          - "mcp-http aeon-memory"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: cargo clippy --features "${{ matrix.features }}"
+        run: cargo clippy --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
+      - name: cargo test --features "${{ matrix.features }}"
+        run: cargo test --all-targets --features "${{ matrix.features }}" --locked
+
+  # The registry test talks to a real PostgreSQL instance. It used to be
+  # unrunnable: the test env guard clears NEXUS_MCP_TENANT_DB_URL, and the test
+  # read the variable after the guard had deleted it, so a bare `return` always
+  # fired and the test reported success while touching no database at all.
+  #
+  # NEXUS_MCP_REQUIRE_POSTGRES_TESTS=1 turns any skip into a failure, and the
+  # assertions below fail the job if the test does not visibly execute — so a
+  # green result here cannot mean "tested nothing".
+  tenant-registry-postgres-tests:
+    name: tenant-registry-postgres (live database)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # postgres:16-alpine, pinned by digest to match this repo's
+        # SHA-pinned-actions convention.
+        image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: nexus_ci
+          POSTGRES_PASSWORD: nexus_ci
+          POSTGRES_DB: nexus_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus_ci -d nexus_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NEXUS_MCP_TENANT_DB_URL: postgres://nexus_ci:nexus_ci@127.0.0.1:5432/nexus_ci
+      NEXUS_MCP_REQUIRE_POSTGRES_TESTS: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: cargo clippy --features "mcp-http aeon-memory tenant-registry-postgres"
+        run: |
+          cargo clippy --all-targets \
+            --features "mcp-http aeon-memory tenant-registry-postgres" \
+            --locked -- -D warnings
+
+      - name: cargo test --features "mcp-http aeon-memory tenant-registry-postgres"
+        run: |
+          cargo test --all-targets \
+            --features "mcp-http aeon-memory tenant-registry-postgres" \
+            --locked
+
+      # Run the database test on its own so its output cannot interleave with
+      # other tests, then assert it really executed. NEXUS_MCP_REQUIRE_POSTGRES_TESTS
+      # already turns a skip into a panic; this is the belt-and-braces check that
+      # the job cannot go green while the registry code goes untouched.
+      - name: registry test must have executed against the database
+        run: |
+          set -euo pipefail
+          cargo test \
+            --features "mcp-http aeon-memory tenant-registry-postgres" \
+            --locked --bin nexus-mcp \
+            tests::postgres_tenant_snapshot_loads_active_rows_from_db_table \
+            -- --exact --nocapture 2>&1 | tee /tmp/tenant-registry-test.log
+
+          log=/tmp/tenant-registry-test.log
+
+          if grep -q '^SKIP: postgres tenant-registry' "$log"; then
+            echo "::error::The PostgreSQL tenant-registry test skipped even though NEXUS_MCP_REQUIRE_POSTGRES_TESTS=1"
+            exit 1
+          fi
+
+          if ! grep -q 'test result: ok\. 1 passed' "$log"; then
+            echo "::error::postgres_tenant_snapshot_loads_active_rows_from_db_table did not run — the registry code is not actually covered"
+            exit 1
+          fi
+
+          echo "Confirmed: the tenant-registry test executed against the live database."
+
+  # Shared replay consumption is meaningful only when the test reaches one
+  # PostgreSQL service from multiple independent pools. The exact rerun and
+  # marker assertions make a missing URL or silent skip a hard failure.
+  replay-store-postgres-tests:
+    name: recall replay store (live PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: nexus_ci
+          POSTGRES_PASSWORD: nexus_ci
+          POSTGRES_DB: nexus_replay_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus_ci -d nexus_replay_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NEXUS_RECALL_REPLAY_TEST_DATABASE_URL: postgres://nexus_ci:nexus_ci@127.0.0.1:5432/nexus_replay_ci
+      NEXUS_REQUIRE_POSTGRES_REPLAY_TESTS: "1"
+      NEXUS_ALLOW_POSTGRES_REPLAY_TEST_RESET: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: cargo clippy --features aeon-replay-postgres
+        run: |
+          cargo clippy --all-targets \
+            --features aeon-replay-postgres \
+            --locked -- -D warnings
+
+      - name: cargo test --features aeon-replay-postgres
+        run: |
+          cargo test --all-targets \
+            --features aeon-replay-postgres \
+            --locked
+
+      - name: replay-store test must have executed against PostgreSQL
+        run: |
+          set -euo pipefail
+          cargo test \
+            --features aeon-replay-postgres \
+            --locked --test recall_v2_postgres \
+            postgres_replay_store_live_database_contract \
+            -- --exact --nocapture 2>&1 | tee /tmp/replay-store-test.log
+
+          log=/tmp/replay-store-test.log
+
+          if grep -q '^SKIP: PostgreSQL replay-store' "$log"; then
+            echo "::error::The PostgreSQL replay-store test skipped"
+            exit 1
+          fi
+
+          grep -q '^POSTGRES_REPLAY_LIVE_DB_REACHED ' "$log" || {
+            echo "::error::The replay-store test did not visibly reach PostgreSQL"
+            exit 1
+          }
+          grep -q '^POSTGRES_RECALL_V2_COMPONENTS_CONSTRUCTED ' "$log" || {
+            echo "::error::The V2 production components did not construct against PostgreSQL"
+            exit 1
+          }
+
+
+          grep -q 'test result: ok\. 1 passed' "$log" || {
+            echo "::error::postgres_replay_store_live_database_contract did not pass"
+            exit 1
+          }
+
+          echo "Confirmed: shared replay-store tests executed against PostgreSQL."
+
+  dockerfile-lint:
+    name: Nexus image build (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: docker/Dockerfile.nexus must exist and stay in sync with publish.yml
+        run: |
+          set -eu
+          test -f docker/Dockerfile.nexus || {
+            echo "::error::docker/Dockerfile.nexus is missing — publish.yml's tag-triggered image build will fail"
+            exit 1
+          }
+          referenced=$(grep -oP '(?<=file: \./)\S+' .github/workflows/publish.yml)
+          if [ "$referenced" != "docker/Dockerfile.nexus" ]; then
+            echo "::error::publish.yml references '$referenced', which does not match the committed docker/Dockerfile.nexus"
+            exit 1
+          fi
+      - uses: docker/setup-buildx-action@v3
+      - name: Lint Dockerfile syntax (no build)
+        run: docker buildx build --file docker/Dockerfile.nexus --check .
+      - name: Build final Nexus image (no push)
+        run: docker buildx build --file docker/Dockerfile.nexus --tag nexus:ci --load .
+
+  # The agentd release fail-closed auth gate is selected by
+  # #[cfg(not(debug_assertions))]. Every other job here builds debug, where that arm
+  # compiles to a permissive no-op — so the shipped behaviour would otherwise never be
+  # executed by CI. This job builds release and asserts the named tests actually ran,
+  # rather than trusting a green badge on a suite that silently excluded them.
+  release-auth-gate:
+    name: release fail-closed gate (cargo test --release)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: cargo test --release (agentd release auth gate)
+        run: |
+          set -euo pipefail
+          cargo test --release --locked --bin nexus-agentd \
+            profile_auth_tests::wrapper_ -- --nocapture 2>&1 | tee release-gate.log
+      - name: Assert the release-only tests actually executed
+        run: |
+          set -euo pipefail
+          for t in wrapper_refuses_tokenless_start_in_release_test_build \
+                   wrapper_accepts_configured_token_in_release_test_build; do
+            grep -q "profile_auth_tests::${t} \.\.\. ok" release-gate.log || {
+              echo "::error::${t} did not run in the release build — the fail-closed gate is unverified"
+              exit 1
+            }
+          done
+          # The debug-only permissive test must NOT be present in a release build; if it
+          # is, the cfg gating regressed and these assertions target the wrong arm.
+          if grep -q 'wrapper_is_permissive_in_this_debug_test_build' release-gate.log; then
+            echo "::error::debug-only test compiled into the release build — cfg gating regressed"
+            exit 1
+          fi
+          grep -qE 'test result: ok\. 2 passed' release-gate.log || {
+            echo "::error::expected exactly 2 release-gate tests to pass"
+            exit 1
+          }
+          echo "Confirmed: the release fail-closed wrapper was exercised in a release build."

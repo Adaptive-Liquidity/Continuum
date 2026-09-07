@@ -1,0 +1,291 @@
+-- Rollback for migration 0028 (agent identity rework).
+--
+-- Returns the schema to the 0027 baseline.  Kept outside `migrations/` on
+-- purpose: this repository uses sqlx's non-reversible migration naming
+-- (`NNNN_name.sql`), so a `.down.sql` sibling inside that directory would make
+-- the whole set inconsistent.  Apply manually:
+--
+--     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+--       -f rollback/0028_agent_tenancy_identity_down.sql
+--
+-- No identifier is lost.  0028 added columns and a record table but never
+-- modified, moved or deleted pre-existing data, and it left `agents.agent_id`
+-- and its global UNIQUE constraint alone, so every V1 row and relationship
+-- survives the round trip untouched.
+--
+-- Rows created through the tenant-aware path need one extra step.  Their
+-- `agent_id` is a compatibility key (the row's UUID), not the caller-facing
+-- identifier, which lives in `external_agent_id`.  Dropping that column without
+-- restoring it first would leave the agent reachable only by a UUID it never
+-- advertised, and re-applying 0028 would then backfill `external_agent_id` from
+-- the UUID — an identifier no operator input reproduces.  The first block below
+-- therefore moves the caller-facing identifier back into `agent_id`, which also
+-- means it briefly drops and re-creates the two foreign keys that reference
+-- that column (`sessions.agent_id`, `archival_batches.agent_id`) — see the
+-- comment on that block for why.  Both come back with their original
+-- definitions, and the block is skipped entirely when no identifier has moved,
+-- which is every step-1 deployment.
+--
+-- Where the baseline schema genuinely cannot hold the data — two tenants
+-- sharing one `external_agent_id`, which is exactly what the global UNIQUE on
+-- `agent_id` forbids — this script raises instead of picking a winner.
+--
+-- What IS discarded: tenant assignments held in `agents.tenant_id` and the
+-- audit rows in `agent_tenancy_migrations`.  Re-running the backfill after
+-- re-applying 0028 reproduces them from the same operator inputs, because the
+-- assignment is a pure function of the declared mode and mapping.
+
+BEGIN;
+
+-- Never trust the caller's session search_path.  Without this a schema placed
+-- ahead of `public` could capture every unqualified name below, including the
+-- function drop, which names no schema at all.  `SET LOCAL` confines it to this
+-- transaction, so the operator's session is unchanged afterwards.
+SET LOCAL search_path = pg_catalog, public;
+
+-- ── Migration order ──────────────────────────────────────────────────────────
+-- Migration 0030 (agent grants) hangs a composite foreign key off
+-- `agents_tenant_id_id_key`, which this script drops.  Unwinding out of order
+-- fails on a dependency error partway through — after the identifier restore
+-- block below has already run.  Refusing up front, with the remedy named, is
+-- the difference between "run this first" and "work out what state your
+-- database is in now".
+--
+-- Deliberately NOT resolved with `DROP ... CASCADE`: cascading would silently
+-- delete every agent grant, which is authorization data, as a side effect of a
+-- rollback the operator asked for on a different migration.
+DO $$
+BEGIN
+    IF to_regclass('public.credential_agent_grants') IS NOT NULL THEN
+        RAISE EXCEPTION
+            'migration 0030 (agent grants) is still applied and depends on constraints this '
+            'rollback removes. Run rollback/0030_credential_agent_grants_down.sql first.'
+            USING ERRCODE = 'dependent_objects_still_exist';
+    END IF;
+END $$;
+
+-- Tranche 1 of the tenancy migration (0032-0041) hangs five more composite
+-- foreign keys off `agents_tenant_id_id_key`.  Same hazard, same remedy, and
+-- the same refusal to reach for CASCADE: cascading here would drop the
+-- ownership constraints on five tables as a side effect of a rollback the
+-- operator asked for on migration 0028.
+--
+-- Checked per constraint rather than by testing for one table, because the five
+-- are attached by a single migration but dropped by a rollback an operator
+-- could have run partially.  Naming which ones are still present is what turns
+-- this from "something depends on it" into a next action.
+--
+-- The bridge FUNCTIONS are checked as well as the constraints, and that is the
+-- load-bearing half.  The five `fn_*_tenancy_bridge` bodies read
+-- `agents.tenant_id` and `agents.id` directly, so they depend on this rollback's
+-- work whether or not any foreign key does.  Checking constraints alone left a
+-- real hole, measured on pg16: roll back 0041 only -- which drops all five
+-- foreign keys but leaves 0032's triggers and columns in place -- and a
+-- constraint-only guard is satisfied. This script would then drop
+-- `agents.tenant_id` while five BEFORE INSERT OR UPDATE triggers still select
+-- it, and every subsequent write to those five tables fails with
+-- `column a.tenant_id does not exist`. The database would be left accepting no
+-- writes at all on five tables, from a rollback that reported success.
+DO $$
+DECLARE
+    remaining TEXT;
+    bridges   TEXT;
+BEGIN
+    -- Found by reverse dependency on the very key this script drops, rather than
+    -- by (name, table-name).
+    --
+    -- Scoping to exact table names was already better than matching the bare
+    -- `conname`, which is unique only per relation and would refuse a rollback
+    -- over an identically-named constraint on some unrelated table. But a
+    -- literal table name is defeated by `ALTER TABLE ... RENAME`: it moves the
+    -- table and leaves the constraint name alone, so a renamed child dropped out
+    -- of the join and the guard reported "Constraints still present: none" while
+    -- one was still attached. The script then reached
+    -- `DROP CONSTRAINT ... agents_tenant_id_id_key` and failed on a raw
+    -- dependency error -- exactly the "work out what state your database is in
+    -- now" outcome this guard exists to prevent.
+    --
+    -- `conindid` is the OID of that unique constraint's index, so this asks the
+    -- question that actually matters: what still depends on the key about to be
+    -- dropped? Rename-proof on both sides, and complete rather than enumerated --
+    -- a sixth dependant attached by a later tranche is reported without this
+    -- list being updated. `conrelid::regclass` names where each dependant really
+    -- lives.
+    SELECT string_agg(format('%s on %s', c.conname, c.conrelid::regclass), ', '
+                      ORDER BY c.conname)
+      INTO remaining
+      FROM pg_catalog.pg_constraint c
+     WHERE c.contype = 'f'
+       AND c.conindid = (
+               SELECT p.conindid
+                 FROM pg_catalog.pg_constraint p
+                WHERE p.conname = 'agents_tenant_id_id_key'
+                  AND p.conrelid = 'public.agents'::regclass
+                  AND p.contype  = 'u');
+
+    SELECT string_agg(p.proname, ', ' ORDER BY p.proname)
+      INTO bridges
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public'
+       -- By signature, not by name alone. PostgreSQL allows overloading, so an
+       -- unrelated `fn_entities_tenancy_bridge(integer)` would keep this guard
+       -- reporting tranche 1 as applied after the real bridges are gone, sending
+       -- the operator to rollback/0032, which cannot remove an overload it never
+       -- created. Migration 0032 installs these as zero-argument functions
+       -- returning `trigger`; nothing else counts.
+       AND p.pronargs   = 0
+       AND p.prorettype = 'pg_catalog.trigger'::regtype
+       AND p.proname IN (
+           'fn_archival_batches_tenancy_bridge',
+           'fn_audit_logs_tenancy_bridge',
+           'fn_entities_tenancy_bridge',
+           'fn_memory_graph_tenancy_bridge',
+           'fn_rmk_policies_tenancy_bridge'
+       );
+
+    IF remaining IS NOT NULL OR bridges IS NOT NULL THEN
+        RAISE EXCEPTION
+            'tenancy tranche 1 is still applied and depends on columns this rollback drops. '
+            'Constraints still present: %. Bridge functions still installed: %. '
+            'Run rollback/0041_tenancy_tranche1_constraints_down.sql, then '
+            'rollback/0033_tenancy_tranche1_indexes_down.sql, then '
+            'rollback/0032_tenancy_tranche1_prepare_down.sql, before this script.',
+            COALESCE(remaining, 'none'),
+            COALESCE(bridges, 'none')
+            USING ERRCODE = 'dependent_objects_still_exist';
+    END IF;
+END $$;
+
+-- ── Restore caller-facing identifiers ────────────────────────────────────────
+-- Runs before anything is dropped.  Skipped entirely when 0028 was never
+-- applied; plpgsql plans the statements lazily, so the guard is enough to keep
+-- the references to `external_agent_id` from being resolved in that case.
+DO $$
+DECLARE
+    unrepresentable BIGINT;
+    fk              RECORD;
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name   = 'agents'
+          AND column_name  = 'external_agent_id'
+    ) THEN
+        RETURN;
+    END IF;
+
+    -- Nothing was created through the tenant-aware path, so no identifier moved
+    -- and the foreign keys below never need to be touched.  This is the only
+    -- case a deployment of step 1 can actually be in, because `insert_agent` is
+    -- not yet reachable from request handling.
+    IF NOT EXISTS (
+        SELECT 1 FROM public.agents WHERE agent_id IS DISTINCT FROM external_agent_id
+    ) THEN
+        RETURN;
+    END IF;
+
+    SELECT COUNT(*) INTO unrepresentable FROM (
+        -- Several agents share one caller-facing identifier: the baseline's
+        -- global UNIQUE on agent_id can hold at most one of them.
+        SELECT external_agent_id
+          FROM public.agents
+         GROUP BY external_agent_id
+        HAVING COUNT(*) > 1
+        UNION ALL
+        -- Or the identifier we would restore is already held by another row.
+        SELECT a.external_agent_id
+          FROM public.agents a
+         WHERE a.agent_id IS DISTINCT FROM a.external_agent_id
+           AND EXISTS (
+               SELECT 1 FROM public.agents b
+                WHERE b.agent_id = a.external_agent_id
+                  AND b.id <> a.id
+           )
+    ) AS conflicts;
+
+    IF unrepresentable > 0 THEN
+        RAISE EXCEPTION
+            'rollback would lose caller-facing identifiers for % agent(s): the 0027 '
+            'schema keeps agents.agent_id globally unique and cannot represent them. '
+            'Remove or rename the conflicting tenant-scoped agents, then retry.',
+            unrepresentable;
+    END IF;
+
+    -- `sessions.agent_id` (0001_initial.sql:23) and `archival_batches.agent_id`
+    -- (0006_archival_versioning.sql:10) reference the value about to change, and
+    -- both are ON UPDATE NO ACTION -- PostgreSQL's default, which neither
+    -- declaration overrides.  Renaming the parent while a child still points at
+    -- the old value is therefore rejected outright and aborts the rollback.
+    -- Drop those keys, repoint the children, rename the parents, then restore
+    -- each constraint from `pg_get_constraintdef`, so the baseline definition
+    -- comes back exactly as it was rather than as something re-typed here.
+    CREATE TEMP TABLE _agents_fk_snapshot ON COMMIT DROP AS
+        SELECT format('%I.%I', n.nspname, cl.relname) AS child_table,
+               c.conname                   AS constraint_name,
+               pg_get_constraintdef(c.oid) AS definition,
+               a.attname                   AS child_column
+          FROM pg_constraint c
+          JOIN pg_class cl ON cl.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = cl.relnamespace
+          JOIN unnest(c.conkey) AS k(attnum) ON TRUE
+          JOIN pg_attribute a
+            ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+         WHERE c.contype  = 'f'
+           AND c.confrelid = 'public.agents'::regclass
+           -- Only keys that target agents(agent_id).  Once §10 step 4 repoints
+           -- dependants at agents(id), those must not be caught by this.
+           AND c.confkey = ARRAY[(
+               SELECT attnum FROM pg_attribute
+                WHERE attrelid = 'public.agents'::regclass AND attname = 'agent_id'
+           )];
+
+    FOR fk IN SELECT * FROM _agents_fk_snapshot LOOP
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I',
+                       fk.child_table, fk.constraint_name);
+    END LOOP;
+
+    FOR fk IN SELECT * FROM _agents_fk_snapshot LOOP
+        EXECUTE format(
+            'UPDATE %s AS c SET %I = a.external_agent_id FROM public.agents a '
+            'WHERE c.%I = a.agent_id '
+            '  AND a.agent_id IS DISTINCT FROM a.external_agent_id',
+            fk.child_table, fk.child_column, fk.child_column);
+    END LOOP;
+
+    UPDATE public.agents
+       SET agent_id = external_agent_id
+     WHERE agent_id IS DISTINCT FROM external_agent_id;
+
+    FOR fk IN SELECT * FROM _agents_fk_snapshot LOOP
+        EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I %s',
+                       fk.child_table, fk.constraint_name, fk.definition);
+    END LOOP;
+END $$;
+
+DROP TRIGGER  IF EXISTS agents_bridge_identity_columns_trg ON public.agents;
+DROP FUNCTION IF EXISTS public.agents_bridge_identity_columns();
+
+ALTER TABLE public.agents DROP CONSTRAINT IF EXISTS agents_tenant_id_external_agent_id_key;
+ALTER TABLE public.agents DROP CONSTRAINT IF EXISTS agents_tenant_id_id_key;
+
+DROP INDEX IF EXISTS public.idx_agents_unmapped;
+
+ALTER TABLE public.agents DROP COLUMN IF EXISTS external_agent_id;
+ALTER TABLE public.agents DROP COLUMN IF EXISTS tenant_id;
+
+DROP INDEX IF EXISTS public.idx_agent_tenancy_migrations_applied;
+DROP TABLE IF EXISTS public.agent_tenancy_migrations;
+
+-- Let `sqlx migrate run` re-apply 0028 cleanly afterwards.  Guarded because the
+-- ledger table does not exist on a database whose migrations were applied by
+-- some other tool.
+DO $$
+BEGIN
+    IF to_regclass('public._sqlx_migrations') IS NOT NULL THEN
+        DELETE FROM public._sqlx_migrations WHERE version = 28;
+    END IF;
+END $$;
+
+COMMIT;

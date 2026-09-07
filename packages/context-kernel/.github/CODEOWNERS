@@ -1,0 +1,10 @@
+# Default repository owner and security gatekeeper.
+* @Adaptive-Liquidity
+
+# Trust-boundary and evidence code requires explicit owner review.
+/src/context_kernel/ @Adaptive-Liquidity
+/src/survival_bench/ @Adaptive-Liquidity
+/tests/ @Adaptive-Liquidity
+/docs/releases/ @Adaptive-Liquidity
+/SECURITY.md @Adaptive-Liquidity
+/GOVERNANCE.md @Adaptive-Liquidity

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nexusiq": {
+      "command": "/absolute/path/to/nexusiq/connect-mcp.sh",
+      "args": [],
+      "env": {
+        "NEXUSIQ_SELFHOST_DIR": "/absolute/path/to/nexusiq"
+      }
+    }
+  }
+}

@@ -1,0 +1,1008 @@
+//! Capability Token System
+//!
+//! Cryptographic capability-based access control for Nexus sandboxes.
+
+use chrono::{DateTime, Utc};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
+use uuid::Uuid;
+
+use crate::error::{NexusError, Result};
+use crate::security::denial::DenialReason;
+
+/// Represents a specific capability that can be granted
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Capability {
+    /// Read a specific file or directory
+    ReadFile(PathBuf),
+    /// Write to a specific file or directory
+    WriteFile(PathBuf),
+    /// List contents of a directory
+    ListDirectory(PathBuf),
+    /// Make HTTP GET requests to matching URLs
+    HttpGet(String),
+    /// Make HTTP POST requests to matching URLs
+    HttpPost(String),
+    /// Execute a specific binary
+    ExecuteBinary(PathBuf),
+    /// Mount tmpfs at a path
+    MountTmpfs(PathBuf),
+    /// Read a raw restored WASM memory preview from MCP rollback responses
+    MemoryPreview,
+    /// Access AEON memory recall
+    MemoryRecall,
+    /// Read AEON memory by scope
+    ReadMemory(MemoryScope),
+    /// Write AEON memory by scope
+    WriteMemory(MemoryScope),
+    /// All capabilities (admin)
+    All,
+    /// No capability (deny all)
+    None,
+}
+
+/// Agent-scoped AEON memory selector.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MemoryScope {
+    /// Match all AEON operations for the given agent id.
+    Agent(String),
+    /// Match AEON operations for a specific agent/session pair.
+    Session {
+        agent_id: String,
+        session_id: String,
+    },
+    /// Match operations under a broad namespace selector.
+    Namespace(String),
+}
+
+impl std::fmt::Display for MemoryScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryScope::Agent(agent_id) => write!(f, "agent:{agent_id}"),
+            MemoryScope::Session {
+                agent_id,
+                session_id,
+            } => write!(f, "session:{agent_id}:{session_id}"),
+            MemoryScope::Namespace(namespace) => write!(f, "namespace:{namespace}"),
+        }
+    }
+}
+
+impl MemoryScope {
+    pub fn parse(input: &str) -> Option<Self> {
+        let mut parts = input.split(':');
+        let kind = parts.next()?.trim();
+
+        match kind {
+            "agent" => parts
+                .next()
+                .map(|agent_id| Self::Agent(agent_id.to_string())),
+            "session" => {
+                let agent_id = parts.next()?.trim();
+                let session_id = parts.next()?.trim();
+                if parts.next().is_some() || agent_id.is_empty() || session_id.is_empty() {
+                    return None;
+                }
+
+                Some(Self::Session {
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                })
+            }
+            "namespace" => parts
+                .next()
+                .filter(|namespace| !namespace.trim().is_empty())
+                .map(|namespace| Self::Namespace(namespace.trim().to_string())),
+            _ => None,
+        }
+    }
+
+    pub fn is_subset_of(&self, parent: &Self) -> bool {
+        match (self, parent) {
+            (Self::Agent(agent_id), Self::Agent(parent_agent_id)) => agent_id == parent_agent_id,
+            (Self::Agent(agent_id), Self::Namespace(parent_namespace)) => {
+                agent_id == parent_namespace
+            }
+            (
+                Self::Session {
+                    agent_id,
+                    session_id,
+                },
+                Self::Session {
+                    agent_id: parent_agent_id,
+                    session_id: parent_session_id,
+                },
+            ) => agent_id == parent_agent_id && session_id == parent_session_id,
+            (Self::Session { agent_id, .. }, Self::Agent(parent_agent_id)) => {
+                agent_id == parent_agent_id
+            }
+            (Self::Session { agent_id, .. }, Self::Namespace(parent_namespace)) => {
+                agent_id == parent_namespace
+            }
+            (Self::Namespace(namespace), Self::Namespace(parent_namespace)) => {
+                namespace == parent_namespace
+            }
+            (Self::Namespace(namespace), Self::Agent(parent_agent_id)) => {
+                namespace == parent_agent_id
+            }
+            (
+                Self::Namespace(namespace),
+                Self::Session {
+                    agent_id: parent_agent_id,
+                    ..
+                },
+            ) => namespace == parent_agent_id,
+            _ => false,
+        }
+    }
+
+    pub fn matches(&self, agent_id: &str, session_id: Option<&str>) -> bool {
+        match self {
+            Self::Agent(scope_agent_id) => scope_agent_id == agent_id,
+            Self::Session {
+                agent_id: scope_agent_id,
+                session_id: scope_session_id,
+            } => {
+                scope_agent_id == agent_id
+                    && session_id
+                        .map(|session_id| session_id == scope_session_id)
+                        .unwrap_or(false)
+            }
+            Self::Namespace(namespace) => namespace == agent_id,
+        }
+    }
+}
+
+impl Capability {
+    fn path_contains(parent: &Path, requested: &Path) -> bool {
+        let parent = normalize_lexical_path(parent);
+        let requested = normalize_lexical_path(requested);
+        parent == requested || requested.starts_with(parent)
+    }
+
+    fn path_eq(left: &Path, right: &Path) -> bool {
+        normalize_lexical_path(left) == normalize_lexical_path(right)
+    }
+
+    /// Check if this capability allows access to the requested capability
+    pub fn allows(&self, requested: &Capability) -> bool {
+        match (self, requested) {
+            // Wildcard grants all
+            (Capability::All, _) => true,
+
+            // None denies all
+            (Capability::None, _) => false,
+
+            // Exact match for ReadFile
+            (Capability::ReadFile(p1), Capability::ReadFile(p2)) => Self::path_contains(p1, p2),
+
+            // Write implies read
+            (Capability::WriteFile(p1), Capability::ReadFile(p2)) => Self::path_contains(p1, p2),
+
+            (Capability::WriteMemory(scope), Capability::ReadMemory(requested)) => {
+                requested.is_subset_of(scope)
+            }
+
+            // Exact match for WriteFile
+            (Capability::WriteFile(p1), Capability::WriteFile(p2)) => Self::path_eq(p1, p2),
+
+            (Capability::ReadMemory(scope), Capability::ReadMemory(requested)) => {
+                requested.is_subset_of(scope)
+            }
+
+            (Capability::WriteMemory(scope), Capability::WriteMemory(requested)) => {
+                requested.is_subset_of(scope)
+            }
+
+            // Exact match for ListDirectory with subdir support
+            (Capability::ListDirectory(p1), Capability::ListDirectory(p2)) => {
+                Self::path_contains(p1, p2)
+            }
+
+            // Exact match for HTTP capabilities
+            (Capability::HttpGet(p1), Capability::HttpGet(p2)) => p1 == p2,
+            (Capability::HttpPost(p1), Capability::HttpPost(p2)) => p1 == p2,
+
+            // Execute and MountTmpfs - exact match only
+            (Capability::ExecuteBinary(p1), Capability::ExecuteBinary(p2)) => p1 == p2,
+            (Capability::MountTmpfs(p1), Capability::MountTmpfs(p2)) => p1 == p2,
+            (Capability::MemoryPreview, Capability::MemoryPreview) => true,
+            (Capability::MemoryRecall, Capability::MemoryRecall) => true,
+
+            // Default deny
+            _ => false,
+        }
+    }
+
+    /// True if `self` grants no more than `parent` — the relation a child
+    /// capability must satisfy to be attenuated from `parent`. Strict inverse
+    /// of `allows`, with explicit handling for the `None`/`All` lattice ends.
+    pub fn is_subset_of(&self, parent: &Capability) -> bool {
+        match (self, parent) {
+            (Capability::None, _) => true, // deny-all is a subset of everything
+            (_, Capability::All) => true,  // everything is a subset of All
+            (Capability::All, _) => false, // All is only a subset of All (above)
+            // Otherwise: parent must grant self (reuses path/scope logic).
+            _ => parent.allows(self),
+        }
+    }
+
+    /// Get a human-readable description
+    pub fn description(&self) -> String {
+        match self {
+            Capability::ReadFile(p) => format!("read:{}", p.display()),
+            Capability::WriteFile(p) => format!("write:{}", p.display()),
+            Capability::ListDirectory(p) => format!("list:{}", p.display()),
+            Capability::HttpGet(pattern) => format!("http_get:{}", pattern),
+            Capability::HttpPost(pattern) => format!("http_post:{}", pattern),
+            Capability::ExecuteBinary(p) => format!("exec:{}", p.display()),
+            Capability::MountTmpfs(p) => format!("tmpfs:{}", p.display()),
+            Capability::MemoryPreview => "nexus:memory_preview".to_string(),
+            Capability::MemoryRecall => "nexus:memory_recall".to_string(),
+            Capability::ReadMemory(scope) => format!("nexus:read_memory:{scope}"),
+            Capability::WriteMemory(scope) => format!("nexus:write_memory:{scope}"),
+            Capability::All => "all".to_string(),
+            Capability::None => "none".to_string(),
+        }
+    }
+}
+
+/// Normalize a path lexically without consulting the filesystem.
+///
+/// Capability token containment is intentionally a lexical relation over path
+/// components: this resolves `.` and `..` while preserving non-existent paths
+/// and avoiding symlink resolution. Symlink targets are not part of capability
+/// attenuation.
+///
+/// Enforcement for real WASI host mounts belongs at explicit mount preparation
+/// (`WasiToolConfig`) and at wasmtime/cap-std preopen traversal. Raw
+/// capability-derived preopens preserve token paths for compatibility with
+/// trusted-path callers.
+pub(crate) fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    let mut normal_depth = 0usize;
+    let mut rooted = false;
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                normalized.push(prefix.as_os_str());
+                rooted = true;
+            }
+            Component::RootDir => {
+                normalized.push(component.as_os_str());
+                rooted = true;
+            }
+            Component::CurDir => {}
+            Component::Normal(part) => {
+                normalized.push(part);
+                normal_depth += 1;
+            }
+            Component::ParentDir => {
+                if normal_depth > 0 {
+                    normalized.pop();
+                    normal_depth -= 1;
+                } else if !rooted {
+                    normalized.push("..");
+                }
+            }
+        }
+    }
+
+    // Capability paths are semantically POSIX (WASI). On Windows, PathBuf uses
+    // `\` separators which breaks equality and `starts_with` comparisons against
+    // `/`-prefixed inputs from capability tokens. Normalize to `/`.
+    #[cfg(windows)]
+    let normalized = PathBuf::from(normalized.to_string_lossy().replace('\\', "/"));
+
+    normalized
+}
+
+/// A signed capability token with expiration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityToken {
+    /// Unique identifier for this token
+    pub id: Uuid,
+    /// The capability this token grants
+    pub capability: Capability,
+    /// Who granted this capability
+    pub granted_by: String,
+    /// When this token was created
+    pub issued_at: DateTime<Utc>,
+    /// When this token expires
+    pub expires_at: DateTime<Utc>,
+    /// Parent token id when this token was minted by attenuation. `None` for
+    /// a root token issued directly by the manager.
+    pub parent_id: Option<Uuid>,
+    /// Depth in the attenuation chain. `0` for a root token; each attenuation
+    /// increments it. Capped by `DEFAULT_MAX_CHAIN_DEPTH`.
+    pub chain_depth: u32,
+    /// Signature over the token data
+    pub signature: Vec<u8>,
+}
+
+/// Default maximum attenuation-chain depth (root token = 0).
+pub const DEFAULT_MAX_CHAIN_DEPTH: u32 = 5;
+
+impl CapabilityToken {
+    /// Create a new capability token
+    pub fn new(
+        capability: Capability,
+        granted_by: &str,
+        validity_duration: std::time::Duration,
+        signing_key: &SigningKey,
+    ) -> Result<Self> {
+        if let Capability::HttpGet(ref p) | Capability::HttpPost(ref p) = capability {
+            crate::security::url_guard::validate_http_capability_pattern(p)?;
+        }
+        let now = Utc::now();
+        let mut token = CapabilityToken {
+            id: Uuid::new_v4(),
+            capability,
+            granted_by: granted_by.to_string(),
+            issued_at: now,
+            expires_at: now + validity_duration,
+            parent_id: None,
+            chain_depth: 0,
+            signature: Vec::new(),
+        };
+
+        let data_to_sign = bincode::serialize(&(
+            &token.id,
+            &token.capability,
+            &token.granted_by,
+            &token.issued_at,
+            &token.expires_at,
+            &token.parent_id,
+            &token.chain_depth,
+        ))
+        .map_err(|e| NexusError::SerializationError(format!("token signing: {e}")))?;
+        token.signature = signing_key.sign(&data_to_sign).to_bytes().to_vec();
+        Ok(token)
+    }
+
+    /// Verify the token signature
+    pub fn verify_signature(&self, verifying_key: &VerifyingKey) -> bool {
+        let Ok(data_to_verify) = bincode::serialize(&(
+            &self.id,
+            &self.capability,
+            &self.granted_by,
+            &self.issued_at,
+            &self.expires_at,
+            &self.parent_id,
+            &self.chain_depth,
+        )) else {
+            return false;
+        };
+
+        let Ok(signature_array) = <[u8; 64]>::try_from(self.signature.as_slice()) else {
+            // Reject tokens with wrong-length signatures immediately — do not
+            // substitute a zero array which could be exploitable if a future
+            // ed25519 implementation changes rejection behaviour for all-zero sigs.
+            return false;
+        };
+        let sig = Signature::from_bytes(&signature_array);
+
+        verifying_key.verify(&data_to_verify, &sig).is_ok()
+    }
+
+    /// Check if token is valid (not expired)
+    pub fn is_valid(&self) -> bool {
+        Utc::now() < self.expires_at
+    }
+
+    /// Check if token allows a specific capability
+    pub fn allows(&self, requested: &Capability) -> bool {
+        self.is_valid() && self.capability.allows(requested)
+    }
+
+    /// Mint a strictly-weaker child token bound to this token as its parent.
+    /// Fails if `narrower` is not a subset of this token's capability, or if
+    /// the resulting depth would exceed `max_depth`. The child's expiry is
+    /// clamped so it can never outlive its parent.
+    pub fn attenuate(
+        &self,
+        narrower: Capability,
+        granted_by: &str,
+        validity_duration: std::time::Duration,
+        signing_key: &SigningKey,
+        max_depth: u32,
+    ) -> Result<CapabilityToken> {
+        if !narrower.is_subset_of(&self.capability) {
+            return Err(NexusError::InvalidCapability(format!(
+                "attenuated capability {:?} is not a subset of parent {:?}",
+                narrower, self.capability
+            )));
+        }
+        let child_depth = self.chain_depth + 1;
+        if child_depth > max_depth {
+            return Err(NexusError::InvalidCapability(format!(
+                "attenuation chain depth {child_depth} exceeds max {max_depth}"
+            )));
+        }
+        if let Capability::HttpGet(ref p) | Capability::HttpPost(ref p) = narrower {
+            crate::security::url_guard::validate_http_capability_pattern(p)?;
+        }
+        let now = Utc::now();
+        let expires_at = (now + validity_duration).min(self.expires_at);
+        let mut token = CapabilityToken {
+            id: Uuid::new_v4(),
+            capability: narrower,
+            granted_by: granted_by.to_string(),
+            issued_at: now,
+            expires_at,
+            parent_id: Some(self.id),
+            chain_depth: child_depth,
+            signature: Vec::new(),
+        };
+        let data_to_sign = bincode::serialize(&(
+            &token.id,
+            &token.capability,
+            &token.granted_by,
+            &token.issued_at,
+            &token.expires_at,
+            &token.parent_id,
+            &token.chain_depth,
+        ))
+        .map_err(|e| NexusError::SerializationError(format!("attenuate signing: {e}")))?;
+        token.signature = signing_key.sign(&data_to_sign).to_bytes().to_vec();
+        Ok(token)
+    }
+}
+
+/// Manages capability tokens and access control
+pub struct CapabilityManager {
+    /// Signing key for issuing tokens
+    signing_key: SigningKey,
+    /// Verifying key for validating tokens
+    verifying_key: VerifyingKey,
+    /// Active tokens by ID
+    active_tokens: HashMap<Uuid, CapabilityToken>,
+    /// Token blacklist (for revocation)
+    revoked_tokens: HashMap<Uuid, DateTime<Utc>>,
+}
+
+impl Default for CapabilityManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CapabilityManager {
+    /// Create a new capability manager with fresh keys
+    pub fn new() -> Self {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = VerifyingKey::from(&signing_key);
+
+        CapabilityManager {
+            signing_key,
+            verifying_key,
+            active_tokens: HashMap::new(),
+            revoked_tokens: HashMap::new(),
+        }
+    }
+
+    /// Create from existing keys
+    pub fn from_keys(signing_key: SigningKey, verifying_key: VerifyingKey) -> Self {
+        CapabilityManager {
+            signing_key,
+            verifying_key,
+            active_tokens: HashMap::new(),
+            revoked_tokens: HashMap::new(),
+        }
+    }
+
+    /// Issue a new capability token
+    pub fn issue(
+        &mut self,
+        capability: Capability,
+        granted_by: &str,
+        validity_duration: std::time::Duration,
+    ) -> Result<CapabilityToken> {
+        let token =
+            CapabilityToken::new(capability, granted_by, validity_duration, &self.signing_key)?;
+
+        self.active_tokens.insert(token.id, token.clone());
+        Ok(token)
+    }
+
+    /// Attenuate an existing (registered) token into a strictly-weaker child,
+    /// signing it with the manager's key and registering it so deeper chains
+    /// can be validated later. Fails if `parent_id` is unknown or the
+    /// narrowing is invalid (see `CapabilityToken::attenuate`).
+    pub fn attenuate(
+        &mut self,
+        parent_id: Uuid,
+        narrower: Capability,
+        granted_by: &str,
+        validity_duration: std::time::Duration,
+    ) -> Result<CapabilityToken> {
+        let parent = self.active_tokens.get(&parent_id).ok_or_else(|| {
+            tracing::warn!(parent_id = %parent_id, "attenuate: parent token not found");
+            NexusError::InvalidCapability("capability chain validation failed".to_string())
+        })?;
+        let child = parent.attenuate(
+            narrower,
+            granted_by,
+            validity_duration,
+            &self.signing_key,
+            DEFAULT_MAX_CHAIN_DEPTH,
+        )?;
+        self.active_tokens.insert(child.id, child.clone());
+        Ok(child)
+    }
+
+    /// Validate a token and check capability
+    pub fn validate(&self, token: &CapabilityToken, requested: &Capability) -> Result<()> {
+        // Check if revoked
+        if let Some(revoked_at) = self.revoked_tokens.get(&token.id) {
+            tracing::warn!(token_id = %token.id, revoked_at = %revoked_at, "token is revoked");
+            return Err(NexusError::InvalidCapability(
+                DenialReason::TokenRevoked.safe_message().to_string(),
+            ));
+        }
+
+        // Check expiration
+        if !token.is_valid() {
+            tracing::warn!(token_id = %token.id, expires_at = %token.expires_at, "token is expired");
+            return Err(NexusError::InvalidCapability(
+                DenialReason::TokenExpired.safe_message().to_string(),
+            ));
+        }
+
+        // Verify signature
+        if !token.verify_signature(&self.verifying_key) {
+            tracing::warn!(token_id = %token.id, "token has invalid signature");
+            return Err(NexusError::InvalidCapability(
+                DenialReason::CapabilityNotPermitted
+                    .safe_message()
+                    .to_string(),
+            ));
+        }
+
+        // Walk and verify the attenuation chain (no-op for root tokens).
+        if token.parent_id.is_some() {
+            self.validate_chain(token, DEFAULT_MAX_CHAIN_DEPTH)?;
+        }
+
+        // Check capability
+        if !token.allows(requested) {
+            tracing::warn!(token_id = %token.id, requested = ?requested, "token does not grant capability");
+            return Err(NexusError::InvalidCapability(
+                DenialReason::CapabilityNotPermitted
+                    .safe_message()
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Walk an attenuation chain from `token` to its root, verifying each
+    /// ancestor's signature, expiry, revocation, depth monotonicity, and that
+    /// every link is a subset of its parent. Ancestors must be registered in
+    /// `active_tokens` (via `issue`/`attenuate`).
+    fn validate_chain(&self, token: &CapabilityToken, max_depth: u32) -> Result<()> {
+        if token.chain_depth > max_depth {
+            return Err(NexusError::InvalidCapability(format!(
+                "chain depth {} exceeds max {max_depth}",
+                token.chain_depth
+            )));
+        }
+        let mut child = token.clone();
+        while let Some(pid) = child.parent_id {
+            // Check revocation before the active_tokens lookup: revoke() removes
+            // the token from active_tokens but records it in revoked_tokens.
+            if let Some(at) = self.revoked_tokens.get(&pid) {
+                tracing::warn!(ancestor_id = %pid, invalidated_at = %at, "ancestor token is no longer valid");
+                return Err(NexusError::InvalidCapability(
+                    DenialReason::TokenRevoked.safe_message().to_string(),
+                ));
+            }
+            let parent = self.active_tokens.get(&pid).ok_or_else(|| {
+                tracing::warn!(parent_id = %pid, "broken attenuation chain: parent not found");
+                NexusError::InvalidCapability("capability chain validation failed".to_string())
+            })?;
+            if !parent.verify_signature(&self.verifying_key) {
+                return Err(NexusError::InvalidCapability(format!(
+                    "ancestor {pid} has invalid signature"
+                )));
+            }
+            if !parent.is_valid() {
+                return Err(NexusError::InvalidCapability(format!(
+                    "ancestor {pid} expired at {}",
+                    parent.expires_at
+                )));
+            }
+            if child.chain_depth != parent.chain_depth + 1 {
+                return Err(NexusError::InvalidCapability(format!(
+                    "non-monotonic chain depth at {pid}"
+                )));
+            }
+            if !child.capability.is_subset_of(&parent.capability) {
+                return Err(NexusError::InvalidCapability(format!(
+                    "link {:?} is not a subset of parent {:?}",
+                    child.capability, parent.capability
+                )));
+            }
+            child = parent.clone();
+        }
+        Ok(())
+    }
+
+    /// Check that every required capability is covered by at least one
+    /// valid, non-revoked token with a correct signature. Returns
+    /// `CapabilityDenied` on the first unsatisfied requirement.
+    pub fn authorize(&self, tokens: &[CapabilityToken], required: &[Capability]) -> Result<()> {
+        for cap in required {
+            let satisfied = tokens.iter().any(|t| self.validate(t, cap).is_ok());
+            if !satisfied {
+                return Err(NexusError::CapabilityDenied(format!(
+                    "no valid token grants {:?}",
+                    cap
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Revoke a token
+    pub fn revoke(&mut self, token_id: Uuid) {
+        self.revoked_tokens.insert(token_id, Utc::now());
+        self.active_tokens.remove(&token_id);
+    }
+
+    /// Check whether a token has been explicitly revoked.
+    pub fn is_revoked(&self, token_id: &Uuid) -> bool {
+        self.revoked_tokens.contains_key(token_id)
+    }
+
+    /// Get the public key for external verification
+    pub fn public_key(&self) -> Vec<u8> {
+        self.verifying_key.as_bytes().to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capability_allow() {
+        let read_home = Capability::ReadFile(PathBuf::from("/home"));
+        assert!(read_home.allows(&Capability::ReadFile(PathBuf::from("/home"))));
+        assert!(read_home.allows(&Capability::ReadFile(PathBuf::from("/home/user"))));
+        assert!(!read_home.allows(&Capability::ReadFile(PathBuf::from("/etc"))));
+    }
+
+    #[test]
+    fn test_token_lifecycle() {
+        let mut manager = CapabilityManager::new();
+
+        let token = manager
+            .issue(
+                Capability::ReadFile(PathBuf::from("/project")),
+                "test-agent",
+                std::time::Duration::from_secs(3600),
+            )
+            .unwrap();
+
+        assert!(token.is_valid());
+        assert!(manager
+            .validate(&token, &Capability::ReadFile(PathBuf::from("/project")))
+            .is_ok());
+        assert!(manager
+            .validate(&token, &Capability::WriteFile(PathBuf::from("/project")))
+            .is_err());
+
+        manager.revoke(token.id);
+        assert!(manager
+            .validate(&token, &Capability::ReadFile(PathBuf::from("/project")))
+            .is_err());
+    }
+
+    fn hour() -> std::time::Duration {
+        std::time::Duration::from_secs(3600)
+    }
+
+    #[test]
+    fn subset_path_narrowing() {
+        let parent = Capability::ReadFile(PathBuf::from("/home"));
+        let child = Capability::ReadFile(PathBuf::from("/home/user"));
+        assert!(child.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn subset_rejects_broader() {
+        let child = Capability::ReadFile(PathBuf::from("/home"));
+        let parent = Capability::ReadFile(PathBuf::from("/home/user"));
+        assert!(!child.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn subset_rejects_lexical_parent_escape() {
+        let parent = Capability::ReadFile(PathBuf::from("/safe"));
+        let child = Capability::ReadFile(PathBuf::from("/safe/../outside"));
+        assert!(!child.is_subset_of(&parent));
+        assert!(!parent.allows(&child));
+    }
+
+    #[test]
+    fn memory_read_denied_for_wrong_agent() {
+        let mut manager = CapabilityManager::new();
+        let token = manager
+            .issue(
+                Capability::ReadMemory(MemoryScope::Agent("agent-a".to_string())),
+                "root",
+                hour(),
+            )
+            .unwrap();
+        assert!(manager
+            .validate(
+                &token,
+                &Capability::ReadMemory(MemoryScope::Agent("agent-b".to_string()))
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn memory_write_denied_for_wrong_session() {
+        let mut manager = CapabilityManager::new();
+        let token = manager
+            .issue(
+                Capability::WriteMemory(MemoryScope::Session {
+                    agent_id: "agent-a".to_string(),
+                    session_id: "session-1".to_string(),
+                }),
+                "root",
+                hour(),
+            )
+            .unwrap();
+        assert!(manager
+            .validate(
+                &token,
+                &Capability::WriteMemory(MemoryScope::Session {
+                    agent_id: "agent-a".to_string(),
+                    session_id: "session-2".to_string(),
+                }),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn memory_access_is_agent_isolated() {
+        let mut manager = CapabilityManager::new();
+        let token = manager
+            .issue(
+                Capability::WriteMemory(MemoryScope::Session {
+                    agent_id: "agent-a".to_string(),
+                    session_id: "session-1".to_string(),
+                }),
+                "root",
+                hour(),
+            )
+            .unwrap();
+        assert!(manager
+            .validate(
+                &token,
+                &Capability::ReadMemory(MemoryScope::Session {
+                    agent_id: "agent-b".to_string(),
+                    session_id: "session-1".to_string(),
+                }),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn lexical_normalization_keeps_valid_child_subset() {
+        let parent = Capability::ReadFile(PathBuf::from("/safe/./data"));
+        let child = Capability::ReadFile(PathBuf::from("/safe/data/nested/.."));
+        assert!(child.is_subset_of(&parent));
+        assert!(parent.allows(&child));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capability_path_containment_is_lexical_not_symlink_aware() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let allowed = tmp.path().join("allowed");
+        let outside = tmp.path().join("outside");
+        let target = outside.join("target");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("file.txt"), b"data").unwrap();
+
+        let link = allowed.join("link");
+        symlink(&target, &link).unwrap();
+
+        let parent = Capability::ReadFile(allowed.clone());
+        let linked_spelling = Capability::ReadFile(link.join("file.txt"));
+        let canonical_spelling = Capability::ReadFile(target.join("file.txt"));
+
+        assert_eq!(
+            std::fs::canonicalize(allowed.join("link").join("file.txt")).unwrap(),
+            std::fs::canonicalize(target.join("file.txt")).unwrap()
+        );
+        assert!(parent.allows(&linked_spelling));
+        assert!(!parent.allows(&canonical_spelling));
+    }
+
+    #[test]
+    fn subset_none_and_all() {
+        let read = Capability::ReadFile(PathBuf::from("/home"));
+        assert!(Capability::None.is_subset_of(&read)); // deny-all ⊆ anything
+        assert!(read.is_subset_of(&Capability::All)); // anything ⊆ All
+        assert!(!Capability::All.is_subset_of(&read)); // All ⊄ a narrower cap
+    }
+
+    #[test]
+    fn subset_read_under_write() {
+        // Write implies read, so a read under the write path is a subset.
+        let parent = Capability::WriteFile(PathBuf::from("/data"));
+        let child = Capability::ReadFile(PathBuf::from("/data/file"));
+        assert!(child.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn attenuate_narrower_ok() {
+        let mut m = CapabilityManager::new();
+        let root = m
+            .issue(Capability::ReadFile(PathBuf::from("/home")), "root", hour())
+            .unwrap();
+        let child = m
+            .attenuate(
+                root.id,
+                Capability::ReadFile(PathBuf::from("/home/user")),
+                "delegate",
+                hour(),
+            )
+            .unwrap();
+        assert_eq!(child.parent_id, Some(root.id));
+        assert_eq!(child.chain_depth, 1);
+    }
+
+    #[test]
+    fn attenuate_broader_fails() {
+        let mut m = CapabilityManager::new();
+        let root = m
+            .issue(
+                Capability::ReadFile(PathBuf::from("/home/user")),
+                "root",
+                hour(),
+            )
+            .unwrap();
+        // Broader path than parent → rejected.
+        let res = m.attenuate(
+            root.id,
+            Capability::ReadFile(PathBuf::from("/home")),
+            "delegate",
+            hour(),
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn attenuate_depth_cap() {
+        let mut m = CapabilityManager::new();
+        let mut current = m
+            .issue(Capability::ReadFile(PathBuf::from("/a")), "root", hour())
+            .unwrap();
+        // Depth 0 root → 5 attenuations reach depth 5 (== DEFAULT_MAX_CHAIN_DEPTH).
+        for _ in 0..DEFAULT_MAX_CHAIN_DEPTH {
+            current = m
+                .attenuate(
+                    current.id,
+                    Capability::ReadFile(PathBuf::from("/a")),
+                    "d",
+                    hour(),
+                )
+                .unwrap();
+        }
+        assert_eq!(current.chain_depth, DEFAULT_MAX_CHAIN_DEPTH);
+        // The 6th attenuation would be depth 6 > max → error.
+        let res = m.attenuate(
+            current.id,
+            Capability::ReadFile(PathBuf::from("/a")),
+            "d",
+            hour(),
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn validate_full_chain() {
+        let mut m = CapabilityManager::new();
+        let root = m
+            .issue(Capability::ReadFile(PathBuf::from("/home")), "root", hour())
+            .unwrap();
+        let mid = m
+            .attenuate(
+                root.id,
+                Capability::ReadFile(PathBuf::from("/home/user")),
+                "d",
+                hour(),
+            )
+            .unwrap();
+        let leaf = m
+            .attenuate(
+                mid.id,
+                Capability::ReadFile(PathBuf::from("/home/user/docs")),
+                "d",
+                hour(),
+            )
+            .unwrap();
+        assert!(m
+            .validate(
+                &leaf,
+                &Capability::ReadFile(PathBuf::from("/home/user/docs"))
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn validate_revoked_parent() {
+        let mut m = CapabilityManager::new();
+        let root = m
+            .issue(Capability::ReadFile(PathBuf::from("/home")), "root", hour())
+            .unwrap();
+        let child = m
+            .attenuate(
+                root.id,
+                Capability::ReadFile(PathBuf::from("/home/user")),
+                "d",
+                hour(),
+            )
+            .unwrap();
+        m.revoke(root.id);
+        assert!(m
+            .validate(&child, &Capability::ReadFile(PathBuf::from("/home/user")))
+            .is_err());
+    }
+
+    #[test]
+    fn validate_expired_parent() {
+        let mut m = CapabilityManager::new();
+        // Parent already expired (zero validity); child expiry is clamped to it.
+        let root = m
+            .issue(
+                Capability::ReadFile(PathBuf::from("/home")),
+                "root",
+                std::time::Duration::from_secs(0),
+            )
+            .unwrap();
+        let child = m
+            .attenuate(
+                root.id,
+                Capability::ReadFile(PathBuf::from("/home/user")),
+                "d",
+                hour(),
+            )
+            .unwrap();
+        assert!(m
+            .validate(&child, &Capability::ReadFile(PathBuf::from("/home/user")))
+            .is_err());
+    }
+
+    #[test]
+    fn child_expiry_clamped_to_parent() {
+        let mut m = CapabilityManager::new();
+        let root = m
+            .issue(Capability::ReadFile(PathBuf::from("/home")), "root", hour())
+            .unwrap();
+        // Request a far longer validity than the parent has.
+        let child = m
+            .attenuate(
+                root.id,
+                Capability::ReadFile(PathBuf::from("/home/user")),
+                "d",
+                std::time::Duration::from_secs(36_000),
+            )
+            .unwrap();
+        assert_eq!(child.expires_at, root.expires_at);
+    }
+}

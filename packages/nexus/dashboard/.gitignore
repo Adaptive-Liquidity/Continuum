@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Local env
+.env*.local
+
+# Build cache
+.turbo/
+*.tsbuildinfo
+
+# CI-generated benchmark data (produced by scripts/criterion_to_json.py)
+benchmark-data.json

@@ -1,0 +1,100 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# docker-compose.override.yml.example — OPTIONAL local overrides
+#
+# Docker Compose automatically merges a file named `docker-compose.override.yml`
+# on top of docker-compose.yml. This example shows the common debugging /
+# observability overrides. To use it:
+#
+#     cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# then UNCOMMENT only the blocks you need and edit to taste. Everything here is
+# commented out by default so copying the file as-is changes nothing.
+#
+# NOTE: the override file is intended for LOCAL development only. Do not commit
+# a populated override; keep production config in .env.
+# ═══════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── 1. Expose Postgres to the host (DEBUG ONLY) ─────────────────────────────
+  # The base stack keeps Postgres on the internal network with no host port.
+  # Uncomment to reach it from the host (psql, a GUI client, migrations, etc.).
+  # SECURITY: binds to loopback only. Never change this to 0.0.0.0.
+  #
+  # postgres:
+  #   ports:
+  #     - "127.0.0.1:5432:5432"
+
+  # ── 2. Raise log verbosity ──────────────────────────────────────────────────
+  # Crank up tracing for one or both Rust services. `debug` is verbose;
+  # `trace` is firehose-level. You can also set RUST_LOG globally in .env.
+  #
+  # aeon:
+  #   environment:
+  #     RUST_LOG: "debug,sqlx=warn,hyper=warn"
+  #
+  # nexus-agentd:
+  #   environment:
+  #     RUST_LOG: "debug"
+
+  # ── 3. AEON-IQ dashboard ────────────────────────────────────────────────────
+  # The AEON-IQ repo ships a `dashboard` service (built from ./dashboard).
+  # To run it here, point the build context at the vendored AEON-IQ tree.
+  # Adjust the path if AEON_BUILD_CONTEXT differs from the default.
+  #
+  # aeon-dashboard:
+  #   build:
+  #     context: ./vendor/aeon-iq/dashboard
+  #   depends_on:
+  #     aeon:
+  #       condition: service_healthy
+  #   environment:
+  #     # Point the dashboard at the in-network AEON service.
+  #     AEON_BASE_URL: "http://aeon:8080"
+  #   ports:
+  #     - "127.0.0.1:3000:3000"
+  #   networks:
+  #     - nexusiq
+
+  # ── 4. Prometheus (metrics scrape) ──────────────────────────────────────────
+  # AEON-IQ exposes Prometheus-compatible metrics. The AEON-IQ repo ships a
+  # prometheus config under docker/prometheus/prometheus.yml — reuse it, or
+  # point at your own. Edit the scrape target to `aeon:8080` inside the file.
+  #
+  # prometheus:
+  #   image: prom/prometheus:v2.51.0
+  #   command:
+  #     - "--config.file=/etc/prometheus/prometheus.yml"
+  #     - "--storage.tsdb.path=/prometheus"
+  #   volumes:
+  #     - ./vendor/aeon-iq/docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus_data:/prometheus
+  #   ports:
+  #     - "127.0.0.1:9090:9090"
+  #   networks:
+  #     - nexusiq
+
+  # ── 5. Grafana (dashboards) ─────────────────────────────────────────────────
+  # Reuses the provisioning + dashboards shipped in the AEON-IQ repo.
+  #
+  # grafana:
+  #   image: grafana/grafana:10.4.0
+  #   depends_on:
+  #     - prometheus
+  #   environment:
+  #     GF_SECURITY_ADMIN_PASSWORD: "admin"   # change me
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #     - ./vendor/aeon-iq/docker/grafana/provisioning:/etc/grafana/provisioning:ro
+  #     - ./vendor/aeon-iq/docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+  #   ports:
+  #     - "127.0.0.1:3001:3000"
+  #   networks:
+  #     - nexusiq
+
+# ── Extra named volumes required by the observability overrides above ─────────
+# Uncomment alongside the prometheus / grafana blocks.
+#
+# volumes:
+#   prometheus_data:
+#   grafana_data:

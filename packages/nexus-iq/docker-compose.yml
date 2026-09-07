@@ -1,0 +1,262 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# NexusIQ self-host stack
+#
+# Services:
+#   postgres      — pgvector-backed store for AEON-IQ (internal only, no host port)
+#   aeon          — AEON-IQ / memoryos-kernel HTTP memory plane (127.0.0.1:8080)
+#   nexus-agentd  — long-lived Nexus execution daemon (unix socket)
+#   nexus-mcp     — STDIO MCP server (profile: tools; run on demand)
+#
+# All configuration comes from .env (see .env.example). Secrets are generated
+# by install.sh; do not commit a populated .env.
+#
+# Bring up the core stack:        docker compose up -d
+# Invoke the MCP server (STDIO):  docker compose run --rm -T nexus-mcp
+# ═══════════════════════════════════════════════════════════════════════════
+
+services:
+  # ── Postgres (pgvector) ───────────────────────────────────────────────────
+  # Internal only — deliberately NOT published to the host. Reach it from the
+  # other services via the hostname `postgres` on the `nexusiq` network.
+  postgres:
+    profiles: ["memory"]
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    mem_limit: 1g
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - nexusiq
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-} -d ${POSTGRES_DB:-}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ── AEON-IQ (memoryos-kernel) ─────────────────────────────────────────────
+  # Reuses the Dockerfile shipped in the AEON-IQ repo (Rust 1.96 builder →
+  # debian:bookworm-slim, EXPOSE 8080). Uses a prebuilt image when present,
+  # otherwise builds from AEON_BUILD_CONTEXT.
+  aeon:
+    profiles: ["memory"]
+    image: ${AEON_IQ_IMAGE:-nexusiq-aeon:local}
+    build:
+      context: ${AEON_BUILD_CONTEXT:-./vendor/aeon-iq}
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    mem_limit: 1g
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # DATABASE_URL is DERIVED from the POSTGRES_* secrets so the password
+      # lives in exactly one place (.env). Do not hard-code it elsewhere.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-}
+
+      # Management API auth. MANAGEMENT_API_KEY MUST match the Nexus client's
+      # NEXUS_AEON_MANAGEMENT_KEY (set below in nexus-agentd / nexus-mcp).
+      MANAGEMENT_API_KEY: ${MANAGEMENT_API_KEY:-}
+      ALLOW_UNAUTH_MANAGEMENT: ${ALLOW_UNAUTH_MANAGEMENT:-false}
+
+      # Upstream LLM / embedding provider.
+      UPSTREAM_PROVIDER: ${UPSTREAM_PROVIDER:-openai}
+      UPSTREAM_BASE_URL: ${UPSTREAM_BASE_URL:-https://api.openai.com}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.openai.com}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
+      EXTRACTOR_MODEL: ${EXTRACTOR_MODEL:-gpt-4o-mini}
+      EXTRACTOR_BASE_URL: ${EXTRACTOR_BASE_URL:-https://api.openai.com}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Required when UPSTREAM_BASE_URL / EMBEDDING_BASE_URL / EXTRACTOR_BASE_URL
+      # use http:// or resolve to a private/loopback address (e.g. Ollama on
+      # host.docker.internal). Never set this to true in a public deployment.
+      AEON_ALLOW_INSECURE_PROVIDER_URLS: ${AEON_ALLOW_INSECURE_PROVIDER_URLS:-false}
+      AEON_EVIDENCE_SIGNING_KEY: ${AEON_EVIDENCE_SIGNING_KEY:-}
+
+      # Server runtime.
+      PORT: ${AEON_PORT:-8080}
+      RUST_LOG: ${RUST_LOG:-info}
+
+      # Tuning (sensible defaults; override in .env if needed).
+      RETRIEVAL_THRESHOLD: ${RETRIEVAL_THRESHOLD:-0.80}
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-0}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-20}
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-20}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-10485760}
+
+      # Role split: this service is the hot path only. Background jobs
+      # (archival, extraction outbox, RMK/AMP sweeps, HNSW maintenance) run
+      # in the dedicated aeon-worker service so they never contend with
+      # request-serving for this pool's connections.
+      MEMORYOS_ROLE: proxy
+    ports:
+      # Bind to loopback only — never expose AEON to the LAN.
+      - "127.0.0.1:${AEON_PORT:-8080}:8080"
+    networks:
+      - nexusiq
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── AEON-IQ background worker ─────────────────────────────────────────────
+  # Same image as `aeon`, MEMORYOS_ROLE=worker: runs archival, extraction
+  # outbox, RMK/AMP sweeps, and HNSW maintenance on its own (smaller)
+  # connection budget. Serves /health + /metrics only; no host port.
+  aeon-worker:
+    profiles: ["memory"]
+    image: ${AEON_IQ_IMAGE:-nexusiq-aeon:local}
+    build:
+      context: ${AEON_BUILD_CONTEXT:-./vendor/aeon-iq}
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-}
+      MANAGEMENT_API_KEY: ${MANAGEMENT_API_KEY:-}
+      ALLOW_UNAUTH_MANAGEMENT: ${ALLOW_UNAUTH_MANAGEMENT:-false}
+      UPSTREAM_PROVIDER: ${UPSTREAM_PROVIDER:-openai}
+      UPSTREAM_BASE_URL: ${UPSTREAM_BASE_URL:-https://api.openai.com}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.openai.com}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
+      EXTRACTOR_MODEL: ${EXTRACTOR_MODEL:-gpt-4o-mini}
+      EXTRACTOR_BASE_URL: ${EXTRACTOR_BASE_URL:-https://api.openai.com}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AEON_ALLOW_INSECURE_PROVIDER_URLS: ${AEON_ALLOW_INSECURE_PROVIDER_URLS:-false}
+      AEON_EVIDENCE_SIGNING_KEY: ${AEON_EVIDENCE_SIGNING_KEY:-}
+      PORT: "8080"
+      RUST_LOG: ${RUST_LOG:-info}
+      RETRIEVAL_THRESHOLD: ${RETRIEVAL_THRESHOLD:-0.80}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-10485760}
+      MEMORYOS_ROLE: worker
+      # Background jobs get a deliberately small pool so a sweep over a large
+      # corpus can never starve the proxy service's connections.
+      DB_MAX_CONNECTIONS: ${WORKER_DB_MAX_CONNECTIONS:-5}
+    networks:
+      - nexusiq
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Nexus agentd (long-lived daemon) ──────────────────────────────────────
+  # Runs on `up`. Exposes the execution socket on the host-owned ./data/run
+  # bind mount so nexus-mcp can talk to it over /run/nexus/nexus-agentd.sock.
+  nexus-agentd:
+    image: ${NEXUS_IMAGE:-nexusiq-nexus:local}
+    build:
+      context: ${NEXUS_BUILD_CONTEXT:-./vendor/nexus}
+      dockerfile: Dockerfile.nexusiq
+    restart: unless-stopped
+    mem_limit: 2g
+    security_opt:
+      - no-new-privileges:true
+    user: "${NEXUSIQ_UID:-1000}:${NEXUSIQ_GID:-1000}"
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    command: ["nexus-agentd", "--socket", "/run/nexus/nexus-agentd.sock"]
+    environment:
+      # ── AEON memory client ──
+      NEXUS_AEON_ENABLED: ${NEXUS_AEON_ENABLED:-true}
+      NEXUS_AEON_BASE_URL: ${NEXUS_AEON_BASE_URL:-http://aeon:8080}
+      # MUST equal the AEON service's MANAGEMENT_API_KEY (same secret).
+      NEXUS_AEON_MANAGEMENT_KEY: ${MANAGEMENT_API_KEY:-}
+      NEXUS_AEON_HMAC_KEY: ${NEXUS_AEON_HMAC_KEY:-}
+      NEXUS_AEON_VERIFYING_KEY: ${NEXUS_AEON_VERIFYING_KEY:-}
+      NEXUS_AEON_AGENT_ID: ${NEXUS_AEON_AGENT_ID:-nexusiq}
+      NEXUS_AEON_SESSION_ID: ${NEXUS_AEON_SESSION_ID:-default}
+      NEXUS_AEON_TIMEOUT_MS: ${NEXUS_AEON_TIMEOUT_MS:-5000}
+
+      # ── agentd ──
+      NEXUS_AGENTD_AUTH_TOKEN: ${NEXUS_AGENTD_AUTH_TOKEN}
+      NEXUS_AGENTD_SOCKET: ${NEXUS_AGENTD_SOCKET:-/run/nexus/nexus-agentd.sock}
+      NEXUS_AGENTD_MODULE_DIR: ${NEXUS_AGENTD_MODULE_DIR:-/modules}
+
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      # Shared socket directory — mounted identically in nexus-mcp.
+      - ./data/run:/run/nexus
+      # Module directory + persistent data planes (host → container).
+      - ./data/modules:/modules
+      - ./data/proofs:/data/proofs
+      - ./data/timeline:/data/timeline
+      - ./data/logs:/data/logs
+    networks:
+      - nexusiq
+    healthcheck:
+      test: ["CMD-SHELL", "nexus daemon ping --socket /run/nexus/nexus-agentd.sock"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Nexus MCP (STDIO only) ────────────────────────────────────────────────
+  # NOT started by `docker compose up` — gated behind the `tools` profile.
+  # Invoke with:  docker compose run --rm -T nexus-mcp
+  # Shares the agentd socket so MCP calls execute through the running daemon.
+  nexus-mcp:
+    image: ${NEXUS_IMAGE:-nexusiq-nexus:local}
+    build:
+      context: ${NEXUS_BUILD_CONTEXT:-./vendor/nexus}
+      dockerfile: Dockerfile.nexusiq
+    profiles: ["tools"]
+    command: ["nexus-mcp"]
+    stdin_open: true
+    tty: false
+    security_opt:
+      - no-new-privileges:true
+    user: "${NEXUSIQ_UID:-1000}:${NEXUSIQ_GID:-1000}"
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    environment:
+      # ── AEON memory client (mirrors nexus-agentd) ──
+      NEXUS_AEON_ENABLED: ${NEXUS_AEON_ENABLED:-true}
+      NEXUS_AEON_BASE_URL: ${NEXUS_AEON_BASE_URL:-http://aeon:8080}
+      NEXUS_AEON_MANAGEMENT_KEY: ${MANAGEMENT_API_KEY:-}
+      NEXUS_AEON_HMAC_KEY: ${NEXUS_AEON_HMAC_KEY:-}
+      NEXUS_AEON_VERIFYING_KEY: ${NEXUS_AEON_VERIFYING_KEY:-}
+      NEXUS_AEON_AGENT_ID: ${NEXUS_AEON_AGENT_ID:-nexusiq}
+      NEXUS_AEON_SESSION_ID: ${NEXUS_AEON_SESSION_ID:-default}
+      NEXUS_AEON_TIMEOUT_MS: ${NEXUS_AEON_TIMEOUT_MS:-5000}
+
+      # ── agentd client (connects to the running daemon's socket) ──
+      NEXUS_AGENTD_AUTH_TOKEN: ${NEXUS_AGENTD_AUTH_TOKEN}
+      NEXUS_AGENTD_SOCKET: ${NEXUS_AGENTD_SOCKET:-/run/nexus/nexus-agentd.sock}
+      NEXUS_MCP_MODULE_DIR: ${NEXUS_MCP_MODULE_DIR:-/modules}
+      NEXUS_MCP_FUEL: ${NEXUS_MCP_FUEL:-1000000000}
+      NEXUS_MCP_TIMEOUT_MS: ${NEXUS_MCP_TIMEOUT_MS:-5000}
+
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - ./data/run:/run/nexus
+      # Module directory is read-only for the MCP surface.
+      - ./data/modules:/modules:ro
+      - ./data/proofs:/data/proofs
+      - ./data/timeline:/data/timeline
+      - ./data/logs:/data/logs
+    networks:
+      - nexusiq
+
+# ── Networks ────────────────────────────────────────────────────────────────
+networks:
+  nexusiq:
+    driver: bridge
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:

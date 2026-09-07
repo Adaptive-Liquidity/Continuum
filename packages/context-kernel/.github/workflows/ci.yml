@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Python 3.12 quality and deterministic smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CKERNEL_LIVE_SMOKE: "0"
+      MPLBACKEND: Agg
+      PYTHONHASHSEED: "0"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --extra dev --locked
+      - name: Verify formatting
+        run: uv run ruff format --check src tests examples
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy src
+      - name: Test with diagnostic coverage
+        run: uv run pytest --cov=context_kernel --cov=survival_bench --cov-report=term-missing
+      - name: Run simulator-only smoke benchmark
+        run: uv run ckernel bench smoke --results-root .ci-results
+      - name: Preserve smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deterministic-smoke-${{ github.sha }}
+          path: .ci-results/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14

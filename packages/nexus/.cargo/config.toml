@@ -1,0 +1,10 @@
+[build]
+jobs = 4
+
+[target.'cfg(not(target_os = "windows"))']
+rustflags = ["-C", "link-arg=-Wl,-S"]
+
+[alias]
+build-benches = "build --release --benches"
+test-all = "test --all-features"
+lint = "clippy -- -D warnings"

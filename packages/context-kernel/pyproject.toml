@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aeon-context-kernel"
+version = "0.2.3"
+description = "Local-first reference implementation and deterministic Context Survival Bench"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Adaptive Liquidity Labs" }]
+maintainers = [{ name = "Adaptive Liquidity Labs" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "jsonschema>=4.23,<5",
+  "matplotlib>=3.9,<4",
+  "pydantic>=2.8,<3",
+  "typer>=0.12,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Adaptive-Liquidity/aeon-context-kernel"
+Repository = "https://github.com/Adaptive-Liquidity/aeon-context-kernel"
+Documentation = "https://github.com/Adaptive-Liquidity/aeon-context-kernel#readme"
+Issues = "https://github.com/Adaptive-Liquidity/aeon-context-kernel/issues"
+Changelog = "https://github.com/Adaptive-Liquidity/aeon-context-kernel/blob/main/CHANGELOG.md"
+Security = "https://github.com/Adaptive-Liquidity/aeon-context-kernel/blob/main/SECURITY.md"
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.11,<3",
+  "pytest>=9.0.3,<10",
+  "pytest-cov>=5,<8",
+  "ruff>=0.6,<1",
+  "types-jsonschema>=4.23,<5",
+]
+
+[project.scripts]
+ckernel = "context_kernel.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/context_kernel", "src/survival_bench"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/context_kernel/cli.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["context_kernel", "survival_bench"]
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["matplotlib.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["context_kernel", "survival_bench"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

@@ -22,3 +22,17 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Continuum service-local secrets and runtime state
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+**/__pycache__/
+**/.pytest_cache/
+**/node_modules/
+**/target/
+**/build/
+**/dist/
+**/.orchestrator_key.pem

@@ -1,0 +1,43 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Generated benchmark and replay artifacts are published separately as release evidence.
+results/*
+!results/.gitkeep
+.ci-results/
+.official-ci-results/
+.release-ci-results/
+
+# Local configuration and credentials.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+
+# Private or in-progress audit work must never be committed.
+audit-private/
+reviewer-workspace/
+
+# Local logs and editor/OS state.
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Local S0 remediation smoke, replay, and re-audit workspaces.
+.s0-remediation*/
+.s0-runner-clock*/

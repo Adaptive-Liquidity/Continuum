@@ -1,0 +1,74 @@
+# GitHub Actions (not Cursor) runs these jobs on GitHub-hosted runners.
+# Job `name:` values are the required check contexts in
+# `.github/rulesets/main-protection.json`. Do not rename them.
+# `verify` does NOT run Runloop live tests (paid).
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22.16"
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - name: Public site
+        run: |
+          npm ci --prefix web
+          npm run verify --prefix web
+
+  docker-c2:
+    name: docker-c2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22.16"
+          cache: npm
+      - run: npm ci
+      - name: Docker client/server
+        run: |
+          docker version
+          docker info
+      - name: Build pinned DockerDev image
+        run: bash ./infra/docker/build.sh
+      - name: Live C2 isolation + persistence
+        env:
+          FLOK_LIVE_DOCKER_TEST: "1"
+        run: npm run test:live:docker
+      - name: Cleanup docker-dev containers and volumes
+        if: always()
+        run: |
+          set +e
+          docker ps -aq --filter label=flok.provider=docker-dev | xargs -r docker rm -f
+          docker volume ls -q --filter label=flok.provider=docker-dev | xargs -r docker volume rm
+          leftover_c=$(docker ps -aq --filter label=flok.provider=docker-dev | wc -l)
+          leftover_v=$(docker volume ls -q --filter label=flok.provider=docker-dev | wc -l)
+          echo "leftover containers=$leftover_c volumes=$leftover_v"
+          if [ "$leftover_c" != "0" ] || [ "$leftover_v" != "0" ]; then
+            echo "resource leak after cleanup" >&2
+            exit 1
+          fi

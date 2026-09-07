@@ -1,0 +1,93 @@
+# AI rescore — runs on pushes to main that touch the recovery path or
+# Phase 3 capture scenarios. Captures the ErrorLogs and asks an external
+# LLM to score them against the rubric defined in the Phase A
+# revalidation. The result is uploaded as a job artifact.
+#
+# The actual scoring is done via a small Python helper so the workflow
+# can run in any CI environment that has $OPENAI_API_KEY or
+# $ANTHROPIC_API_KEY in its secrets store.
+
+name: AI rescore
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/hypervisor/**"
+      - "src/instinct/**"
+      - "examples/capture_error.rs"
+      - "scripts/run_phase3_capture.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  rescore:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Check LLM API key presence
+        id: llm_config
+        run: |
+          if [ -n "$OPENAI_KEY" ] || [ -n "$ANTHROPIC_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "⚠ Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY secret is set — skipping rescore."
+          fi
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch as of 2026-06-16
+        if: steps.llm_config.outputs.configured == 'true'
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: steps.llm_config.outputs.configured == 'true'
+
+      - name: Capture Phase 3 ErrorLogs
+        if: steps.llm_config.outputs.configured == 'true'
+        env:
+          CARGO_TARGET_DIR: ./target
+        run: |
+          mkdir -p artifacts/raw
+          bash scripts/setup_benchmark_env.sh
+          bash scripts/run_phase3_capture.sh
+
+      - name: Score via external LLM
+        if: steps.llm_config.outputs.configured == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet openai anthropic
+          .venv/bin/python scripts/ai_rescore.py \
+            --index artifacts/raw/phase3_index.json \
+            --out artifacts/raw/phase3_ai_rescore_ci.md \
+            --samples 3
+
+      - name: Fail the job if accuracy regressed
+        if: steps.llm_config.outputs.configured == 'true'
+        run: |
+          # Parse the headline accuracy out of the rescore file; require >= 70%.
+          acc=$(grep -oE "Aggregate accuracy rate: [0-9]+" \
+              artifacts/raw/phase3_ai_rescore_ci.md | head -1 | awk '{print $NF}')
+          if [ -z "$acc" ]; then
+              echo "could not parse accuracy"
+              exit 1
+          fi
+          if [ "$acc" -lt 70 ]; then
+              echo "AI accuracy regressed to ${acc}% (threshold 70%)"
+              exit 1
+          fi
+          echo "AI accuracy ${acc}% OK"
+
+      - name: Upload rescore
+        if: always() && steps.llm_config.outputs.configured == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: phase3-ai-rescore
+          path: artifacts/raw/phase3_ai_rescore_ci.md

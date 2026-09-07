@@ -1,0 +1,56 @@
+name: Bug report
+description: Report reproducible non-security behavior in AEON Context Kernel
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. **Do not include security vulnerabilities, credentials, personal data, or private audit findings here.** Follow `SECURITY.md` for private disclosure.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the package version and exact commit when available.
+      placeholder: "0.2.0 / abc1234"
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Explain what happened and include the smallest safe reproduction.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Explain the result you expected and why.
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands and output
+      description: Include exact commands, exit status, and sanitized output.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include operating system, Python version, uv version, and relevant package versions.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Claim and safety check
+      options:
+        - label: This report contains no secrets, personal data, or embargoed vulnerability details.
+          required: true
+        - label: I understand deterministic simulator results are not real-model efficacy evidence.
+          required: true

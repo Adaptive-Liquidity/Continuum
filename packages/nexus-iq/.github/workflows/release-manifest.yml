@@ -1,0 +1,54 @@
+name: Release manifest
+
+# On kit tags: generate the release-pinned artifacts RELEASING.md previously
+# prescribed as manual steps — a pinned compose manifest, SHA256SUMS, and the
+# resolved image digests — and attach them to the GitHub release.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Generate pinned manifest + checksums
+        run: |
+          mkdir -p release
+          TAG="$(./scripts/validate-release-tag.sh "${GITHUB_REF_NAME}")"
+          # Resolve only release image refs. Runtime secrets remain environment
+          # references instead of known literal values.
+          MANIFEST="release/docker-compose.${TAG}.pinned.yml"
+          docker compose --profile memory --profile tools config --no-interpolate > "$MANIFEST"
+          sed -i \
+            -e "s#\${NEXUS_IMAGE:-nexusiq-nexus:local}#ghcr.io/adaptiveliquidity/nexusiq-nexus:${TAG#v}#g" \
+            -e "s#\${AEON_IQ_IMAGE:-nexusiq-aeon:local}#ghcr.io/adaptiveliquidity/aeon-iq:${TAG#v}#g" \
+            "$MANIFEST"
+          grep -Fq '${MANAGEMENT_API_KEY:-}' "$MANIFEST"
+          grep -Fq '${NEXUS_AEON_HMAC_KEY:-}' "$MANIFEST"
+          grep -Fq '${NEXUS_AGENTD_AUTH_TOKEN}' "$MANIFEST"
+          if grep -Eq '(^|[[:space:]])(POSTGRES_PASSWORD|MANAGEMENT_API_KEY|NEXUS_AEON_HMAC_KEY|NEXUS_AGENTD_AUTH_TOKEN): x$' "$MANIFEST"; then
+            echo "::error::release manifest contains known placeholder credentials"
+            exit 1
+          fi
+          # Kit source checksums.
+          find . -maxdepth 2 -type f \( -name "*.sh" -o -name "docker-compose.yml" -o -name "Dockerfile*" \) \
+            -not -path "./release/*" -print0 | sort -z | xargs -0 sha256sum > "release/SHA256SUMS.${TAG}"
+          # Resolve published image digests when the images exist.
+          for img in "ghcr.io/adaptiveliquidity/nexusiq-nexus:${TAG#v}" \
+                     "ghcr.io/adaptiveliquidity/aeon-iq:${TAG#v}"; do
+            docker buildx imagetools inspect "$img" >> "release/IMAGE_DIGESTS.${TAG}.txt" 2>/dev/null \
+              || echo "(not yet published: $img)" >> "release/IMAGE_DIGESTS.${TAG}.txt"
+          done
+
+      - name: Attach to GitHub release
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        with:
+          files: release/*
