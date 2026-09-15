@@ -1,0 +1,48 @@
+{
+  "schema": "asentxia.p00.claim-manifest.v1",
+  "paper": "P00 Distributed Cognitive Architecture",
+  "continuum_pin_note": "Use current main after the AC rewrite commit",
+  "nexus_table6_pin": "2e863998665d5b9a0369dc5cf3f2307b27835e46",
+  "claims": [
+    {
+      "id": "EXP-2A-AC1",
+      "class": "EXPERIMENTALLY_VERIFIED",
+      "responsibility": "Environment",
+      "artifact": "docs/evidence/continuum-persistence-slice-2a.json",
+      "reproduction": "make reproduce-p00",
+      "limitation": "same-host process restart only"
+    },
+    {
+      "id": "EXP-2A-AC2",
+      "class": "EXPERIMENTALLY_VERIFIED",
+      "responsibility": "Cognition Boundary",
+      "artifact": "docs/evidence/continuum-persistence-slice-2a.json",
+      "reproduction": "make reproduce-p00",
+      "limitation": "same-host process restart only"
+    },
+    {
+      "id": "EXP-2A-AC5",
+      "class": "EXPERIMENTALLY_VERIFIED",
+      "responsibility": "Execution",
+      "artifact": "docs/evidence/continuum-persistence-slice-2a.json",
+      "reproduction": "make reproduce-p00",
+      "limitation": "in-process SQLite status write; not NEXUS"
+    },
+    {
+      "id": "EXP-2A-AC8",
+      "class": "EXPERIMENTALLY_VERIFIED",
+      "responsibility": "Evidence",
+      "artifact": "docs/evidence/continuum-persistence-slice-2a.json",
+      "reproduction": "make reproduce-p00",
+      "limitation": "computed excluded_scope flags; not notarized"
+    },
+    {
+      "id": "COMP-NEXUS",
+      "class": "COMPONENT_EVIDENCE",
+      "responsibility": "Execution",
+      "repository": "Adaptive-Liquidity/Nexus-temp",
+      "commit": "2e863998665d5b9a0369dc5cf3f2307b27835e46",
+      "limitation": "recovery mirror; not integrated in #2A"
+    }
+  ]
+}
