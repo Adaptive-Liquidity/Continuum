@@ -1,0 +1,51 @@
+{
+  "acceptance": {
+    "AC-1": true,
+    "AC-2": true,
+    "AC-3": true,
+    "AC-4": true,
+    "AC-5": true,
+    "AC-6": true,
+    "AC-7": true,
+    "AC-8": true
+  },
+  "authority": {
+    "capability": "effect:continuum.marker.write",
+    "final_state": "REVOKED",
+    "grant_id": "grant-c2880e72-9c50-4d9c-ae77-536e2e7a0631"
+  },
+  "claim_ceiling": "Bounded Decision #2A internal proof only; no claim is made beyond AC-1 through AC-8.",
+  "computer_id": "continuum-computer-2ff56de7-bf09-49b4-9b11-7fb22554016b",
+  "discontinuity": {
+    "post_restart_process_id": 869,
+    "pre_restart_process_id": 859,
+    "type": "process_restart_same_host"
+  },
+  "evidence": [
+    {"kind":"computer.created","process_id":859,"seq":1},
+    {"kind":"vera.created","process_id":859,"seq":2},
+    {"kind":"process.phase1.started","process_id":859,"seq":3},
+    {"kind":"state.written","process_id":859,"seq":4},
+    {"kind":"grant.issued","process_id":859,"seq":5},
+    {"kind":"process.phase1.ready_for_restart","process_id":859,"seq":6},
+    {"kind":"process.phase2.reconstituted","process_id":869,"seq":7},
+    {"kind":"state.read","process_id":869,"seq":8},
+    {"kind":"effect.committed","process_id":869,"seq":9},
+    {"kind":"grant.revoked","process_id":869,"seq":10},
+    {"kind":"effect.denied","process_id":869,"seq":11}
+  ],
+  "execution": {
+    "active_grant_outcome": "COMMITTED",
+    "effect_name": "continuum.marker.write",
+    "mediator": "continuum-persistence-slice-effect-boundary",
+    "revoked_grant_outcome": "DENIED"
+  },
+  "generated_at": "2026-09-15T09:47:40Z",
+  "schema": "asentxia.continuum.persistence-slice.2a.v1",
+  "scope": "process restart on the same host; persistence beyond process/session only",
+  "state": {
+    "key": "continuity_marker",
+    "value": "continuum-state-survives-restart"
+  },
+  "vera_id": "vera-cf4f1d9c-ddd6-400c-90ae-00c7d9d10773"
+}
