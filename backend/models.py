@@ -1,10 +1,10 @@
-"""DCA domain models — one per mandatory responsibility."""
+"""DCA domain models — canonical responsibilities plus persistent-principal records."""
 from __future__ import annotations
 from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 from base import BaseDocument, utcnow_iso
 
-# ---------- Responsibility 1: Principal Identity & Responsibility ----------
+# ---------- Persistent principal (cross-cutting): VERA ----------
 VeraState = Literal["ACTIVE", "SUSPENDED", "DECOMMISSIONED"]
 
 
@@ -18,12 +18,12 @@ class VERA(BaseDocument):
     representation: dict[str, Any] = Field(default_factory=dict)  # credential bindings
 
 
-# ---------- Responsibility 2: Environment & Runtime Continuity ----------
+# ---------- Responsibility 1: Environment ----------
 PlacementState = Literal["ACTIVE", "FENCED", "TERMINATED"]
 
 
 class RuntimePlacement(BaseDocument):
-    """floks-pc Agent Computer: 1 VERA ↔ 1 isolated computer (provider-backed)."""
+    """Continuum Computer placement; floks-pc provides the environment lineage."""
     vera_id: str
     provider: str = "runloop-devbox"  # v1 provider per floks-pc AUTHORITY.md
     computer_id: str
@@ -34,9 +34,9 @@ class RuntimePlacement(BaseDocument):
     surface: dict[str, Any] = Field(default_factory=dict)  # browser, fs, shell
 
 
-# ---------- Responsibility 3: Durable State & Memory ----------
+# ---------- Responsibility 2: State ----------
 class MemoryFact(BaseDocument):
-    """AEON-IQ memory: extracted fact bound to VERA, with provenance."""
+    """AEON-IQ state/memory fact bound to VERA, with provenance."""
     vera_id: str
     session_id: Optional[str] = None
     kind: Literal["semantic", "episodic", "operational", "derived"] = "semantic"
@@ -45,7 +45,7 @@ class MemoryFact(BaseDocument):
     retention_policy: Literal["retain", "ttl", "purge_on_revoke"] = "retain"
 
 
-# ---------- Responsibility 4: Authority & Capability Governance ----------
+# ---------- Responsibility 3: Authority ----------
 GrantState = Literal["ACTIVE", "SUSPENDED", "EXPIRED", "REVOKED"]
 
 
@@ -60,7 +60,7 @@ class AuthorityGrant(BaseDocument):
     parent_grant_id: Optional[str] = None  # attenuation chain
 
 
-# ---------- Responsibility 5: Effectful Execution ----------
+# ---------- Responsibility 4: Execution ----------
 EffectOutcome = Literal["PREPARED", "DISPATCHED", "COMMITTED", "DENIED", "UNKNOWN", "COMPENSATED"]
 
 
@@ -78,7 +78,7 @@ class Effect(BaseDocument):
     executed_at: Optional[str] = None
 
 
-# ---------- Responsibility 6: Evidence, Verification & Recovery ----------
+# ---------- Responsibility 5: Evidence ----------
 class EvidenceEntry(BaseDocument):
     """Hash-chained JSONL-style evidence, context-kernel-inspired."""
     seq: int
@@ -96,7 +96,7 @@ class EvidenceEntry(BaseDocument):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-# ---------- Responsibility 7: Coordination & Interconnect ----------
+# ---------- Responsibility 6: Coordination ----------
 SessionState = Literal["OPEN", "CLOSED", "HANDED_OFF"]
 
 
@@ -108,6 +108,11 @@ class Session(BaseDocument):
     opened_at: str = Field(default_factory=utcnow_iso)
     closed_at: Optional[str] = None
     handoff_to: Optional[str] = None  # another vera_id
+
+
+# Responsibility 7 (Cognition Boundary) is an interface responsibility rather
+# than a dedicated persisted object: principal/state/authority/environment IDs
+# must remain independent of any one model or inference-process instance.
 
 
 # ---------- Request/Response DTOs ----------
