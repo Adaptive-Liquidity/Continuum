@@ -1,84 +1,96 @@
-# DCA Responsibility Map — floks-pc integrated reference
+# DCA Responsibility Map — Current Canonical Alignment
 
-Each row below identifies (a) the responsibility, (b) which upstream package
-carries its primary lineage, (c) the orchestrator surface, and (d) the concrete
-enforcement point exercised by the demo flow.
+This map follows **Category Doctrine v1 (approved 2026-09-12)**. DCA defines seven normative responsibilities:
 
-## Responsibility 1 — Principal Identity & Responsibility
+1. Environment
+2. State
+3. Authority
+4. Execution
+5. Evidence
+6. Coordination
+7. Cognition Boundary
 
-- **Package:** `packages/genesis` (signed identity, delegation chains)
-- **Orchestrator:** `POST /api/dca/veras`, lifecycle transitions
-- **Enforcement:** VERA `state ∈ {ACTIVE, SUSPENDED, DECOMMISSIONED}`. Suspension
-  cascades → all ACTIVE grants become SUSPENDED. Decommissioning cascades →
-  grants REVOKED, placements TERMINATED. Identifier is never reassigned.
+The package mappings below describe implementation lineage and current repository surfaces. They do **not** imply that every responsibility is completely implemented or production-ready.
 
-## Responsibility 2 — Environment & Runtime Continuity
+## Responsibility 1 — Environment
 
-- **Package:** `packages/floks-pc` (Runloop devbox v1 Agent Computer cloud)
-- **Orchestrator:** `POST /api/dca/placements/lease`, `/fence`
-- **Enforcement:** Placement `state ∈ {ACTIVE, FENCED, TERMINATED}` + monotonic
-  `lease_epoch`. Fencing increments epoch; downstream Effect Boundary checks
-  placement state before dispatch. Lease alone never grants effect authority
-  (locked in `03_Asentxia_Regency_Product_Architecture_Baseline_RC-0.4.md#5`).
+- **Primary lineage:** `packages/floks-pc`
+- **Orchestrator surface:** `POST /api/dca/placements/lease`, placement lifecycle / fencing
+- **Current enforcement surface:** placement state, persistent computer identifier, provider reference, lease epoch, and execution fencing.
+- **Decision #2A evidence:** a named Continuum Computer ID is preserved across a process restart on the same host.
 
-## Responsibility 3 — Durable State & Memory
+Environment answers: **Where does the principal operate, and what remains the environment when the underlying process changes?**
 
-- **Package:** `packages/aeon-iq` (MemoryOS transparent OpenAI proxy)
-- **Orchestrator:** `POST /api/dca/memory`, `GET /api/dca/memory/recall/{vera_id}`
-- **Enforcement:** Facts bound to `vera_id` + optional `session_id`. Kind ∈
-  `{semantic, episodic, operational, derived}` per foundation §3. Source
-  provenance stored per aeon-iq's provenance rules. Recall in the orchestrator
-  is substring; production would delegate to aeon-iq's HNSW-backed retrieval.
+## Responsibility 2 — State
 
-## Responsibility 4 — Authority & Capability Governance
+- **Primary lineage:** `packages/aeon-iq`, Context Kernel lineage, orchestrator durable records
+- **Orchestrator surface:** `POST /api/dca/memory`, `GET /api/dca/memory/recall/{vera_id}`
+- **Current enforcement surface:** VERA-bound durable state and memory records with provenance-oriented fields.
+- **Decision #2A evidence:** a value written before process restart is read after reconstitution without being supplied as model-context replay.
 
-- **Package:** `packages/genesis` (attenuation chains, revocation)
-- **Orchestrator:** `POST /api/dca/authority/grants`, `/revoke`
-- **Enforcement:** Grant `state ∈ {ACTIVE, SUSPENDED, EXPIRED, REVOKED}`.
-  Attenuation invariant — child grant's `capability` must equal parent's;
-  parent must be ACTIVE. Revocation cascades to children. Envelope-Bounded
-  Transition Safety (ADR-S14): authority stays within mission ceiling.
+State answers: **What persists so the principal does not become a new entity at each cognition invocation?**
 
-## Responsibility 5 — Effectful Execution
+## Responsibility 3 — Authority
 
-- **Package:** `packages/nexus` (WASM/WASI capability-gated sandbox) +
-  `packages/nexus-iq` (self-host + Proof Capsules)
-- **Orchestrator:** `POST /api/dca/effects/propose`, `POST /api/dca/effects/{id}/dispatch`
-- **Enforcement:** `action_id` provides exactly-once semantics (duplicate proposal
-  returns existing effect). Outcomes ∈ `{PREPARED, DISPATCHED, COMMITTED, DENIED,
-  UNKNOWN, COMPENSATED}`. `UNKNOWN` is never blind-retried (foundation §4). The
-  current adapter is `nexus.mock`; a production wire would issue a scoped Nexus
-  capability token and invoke the Rust hypervisor.
+- **Primary lineage:** `packages/genesis`, AEON Program, authority research
+- **Orchestrator surface:** `POST /api/dca/authority/grants`, `/revoke`
+- **Current enforcement surface:** scoped grants, expiry, parent/child attenuation constraints, revocation, VERA lifecycle interactions.
+- **Decision #2A evidence:** one explicit scoped grant allows the mediated effect while active; after revocation the same capability is refused.
 
-## Responsibility 6 — Evidence, Verification & Recovery
+Authority answers: **What is this principal authorized to do, under what scope, and can that authority be revoked?**
 
-- **Package:** `packages/context-kernel` (hash-chained JSONL trace,
-  verifier-issued provenance, deterministic replay)
-- **Orchestrator:** `GET /api/dca/evidence`, `GET /api/dca/evidence/verify`
-- **Enforcement:** Every state transition across R1-R7 emits an entry with
-  `seq`, `prev_hash`, `self_hash = SHA256(prev_hash || kind || subject_id ||
-  canonical(payload))`. `/verify` re-derives every hash from GENESIS forward
-  and reports `broken_at` if the chain is tampered.
+## Responsibility 4 — Execution
 
-## Responsibility 7 — Coordination & Interconnect
+- **Primary lineage:** `packages/nexus`, `packages/nexus-iq`
+- **Orchestrator surface:** `POST /api/dca/effects/propose`, `POST /api/dca/effects/{id}/dispatch`
+- **Current enforcement surface:** effect preparation, authority resolution, placement fencing, mediated dispatch, bounded outcomes and evidence emission.
+- **Decision #2A evidence:** the effect occurs after reconstitution through a mediator that is distinct from cognition.
 
-- **Package:** orchestrator sessions + `packages/floks-pc` mcp gateway lineage
-- **Orchestrator:** `POST /api/dca/sessions/open`, `/close`, `/handoff`
-- **Enforcement:** A session binds VERA↔placement; handoff transfers control
-  to another ACTIVE VERA but preserves participant separation — no identity,
-  private state, authority, or trust domain merges.
+Execution answers: **How does authorized intent become a real effect through a controlled execution boundary?**
 
-## Effect Boundary — cross-cutting (not R8)
+## Responsibility 5 — Evidence
 
-The gate implemented inside `POST /effects/{id}/dispatch`:
+- **Primary lineage:** Nexus Proof Capsules, AEON receipts, Context Kernel, SPX402 lineage, Continuum evidence records
+- **Orchestrator surface:** `GET /api/dca/evidence`, `GET /api/dca/evidence/verify`
+- **Current enforcement surface:** structured transition/effect records and repository-specific proof artifacts.
+- **Decision #2A evidence:** an inspector can independently read the Computer ID, VERA ID, restart discontinuity, state write/read, grant, committed effect, revocation and denied retry.
 
-```
-1. Load effect → must be PREPARED or UNKNOWN
-2. If session_id is bound → resolve placement → must be ACTIVE (not FENCED/TERMINATED)
-3. Resolve authority → active grant covering capability_required and not expired
-4. If gate passes → adapter dispatch (nexus.mock stub; real wire: nexus)
-5. Append evidence.committed OR evidence.denied
-6. Persist outcome atomically
-```
+Evidence answers: **What independently inspectable record shows what happened, under which authority, and with what outcome?**
 
-Cognition proposes; authority decides; runtime contains; state persists; evidence records.
+## Responsibility 6 — Coordination
+
+- **Primary lineage:** Agent-Bridge, orchestrator session/handoff structures, related coordination research
+- **Orchestrator surface:** `POST /api/dca/sessions/open`, `/close`, `/handoff`
+- **Current enforcement surface:** bounded session and handoff structures that preserve principal separation.
+- **Decision #2A:** explicitly out of scope. The persistence slice does not establish multi-VERA coordination.
+
+Coordination answers: **How can independently bounded principals or systems interact without collapsing identity, authority, state or responsibility?**
+
+## Responsibility 7 — Cognition Boundary
+
+- **Primary lineage:** model/provider-neutral interfaces across Continuum, AEON-IQ and related systems
+- **Current architectural rule:** cognition is an external/changeable source of intelligence, not the store of principal identity, durable state, authority or runtime continuity.
+- **Decision #2A evidence:** the process carrying the active computation is terminated and replaced while the same Continuum Computer ID, VERA identity, durable state and authority record persist.
+- **Claim ceiling:** the current proof does not require or prove model-provider swap.
+
+Cognition Boundary answers: **How can the intelligence source change without redefining the persistent principal and the systems around it?**
+
+## VERA — cross-responsibility principal
+
+A **VERA — Verifiable Entity with Revocable Authority** — is the canonical persistent autonomous principal. VERA is not an eighth DCA responsibility and is not synonymous with a model instance, process, session, workflow, VM or container.
+
+Current Continuum models keep the VERA identity separate from runtime placements, memory/state, authority grants, effects and sessions.
+
+## Effect Boundary — cross-cutting, not an eighth responsibility
+
+The current Continuum execution gate resolves the effect, applicable placement state and current authority before dispatch, then records the resulting outcome. NEXUS and related execution lineage provide the deeper sandbox/capability implementation surfaces.
+
+The governing separation is:
+
+> Cognition proposes. Authority constrains. Execution mediates. Evidence records.
+
+## Decision #2A proof boundary
+
+The reproducible proof under `proofs/continuum-persistence-slice/` currently demonstrates the bounded internal slice defined by Decision #2A: process restart on the same host, persistence beyond process/session, durable state, scoped revocable authority, one post-reconstitution mediated effect and an independently inspectable evidence record.
+
+It does not establish complete implementation of all seven DCA responsibilities, host/machine migration, model-provider swap, production-scale coordination, universal recovery or production readiness.
