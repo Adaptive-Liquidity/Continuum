@@ -13,7 +13,7 @@ Human-readable mirror of `artifact/manifest.json`.
 | EXP-2A-AC5 | EXPERIMENTALLY VERIFIED | Execution | Post-restart effect goes through a non-model mediator | #2A artifact AC-5 | In-process SQLite status write; not NEXUS |
 | EXP-2A-AC6 | EXPERIMENTALLY VERIFIED | Evidence | Structured event sequence is independently recomputable | #2A artifact AC-6 | Not notarized / not tamper-evident |
 | EXP-2A-AC8 | EXPERIMENTALLY VERIFIED | Evidence | Excluded scope is not represented as proven | #2A artifact AC-8 | Computed excluded_scope flags |
-| COMP-FLOKS | COMPONENT EVIDENCE | Environment | FLOKS L0–L3 private-beta Agent Computer lineage | floks-pc@35b5e714 | Not integrated in #2A |
+| COMP-ENV | COMPONENT EVIDENCE | Environment | Vendored environment lineage (historical package directory; not a current product) | packages/ tree @35b5e714 | Not integrated in #2A |
 | COMP-AEON | COMPONENT EVIDENCE | State | AEON-IQ memory proxy lineage | AEON-IQ-temp@d5866e85 | Recovery mirror; not integrated in #2A |
 | COMP-GENESIS | COMPONENT EVIDENCE | Authority | Genesis R0–R2 authority lifecycle tests | genesis-runtime@dfd9c69a | In-memory; not integrated in #2A |
 | COMP-NEXUS | COMPONENT EVIDENCE | Execution | NEXUS WASI/capability tests | Nexus-temp@2e863998 | Recovery mirror; not integrated in #2A |
