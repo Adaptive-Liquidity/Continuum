@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""Continuum Persistence Slice #2A — stdlib-only internal genesis proof.
+"""Continuum Persistence Slice #2A — stdlib-only bounded proof harness.
 
-This harness proves the bounded Decision #2A claim on one host:
-one Continuum Computer, one VERA, one process-restart discontinuity,
-durable state, one scoped revocable grant, one mediated post-restart effect,
-and an independently inspectable structured evidence artifact.
+Two sequential OS processes share one SQLite store on the same host. Phase 1
+writes identity, durable state, and an active grant, then exits normally.
+Phase 2 reconstitutes the same Computer and VERA, reads the marker, commits
+one mediated local write, revokes the grant, and records a denied retry.
 
-It does not prove host migration, provider swap, coordination, full DCA
-conformance, production readiness, or cryptographic verification.
+The verifier recomputes AC-1 through AC-8 from raw artifact fields. Stored
+acceptance booleans are ignored. This is an internal script by the same
+author, not third-party verification.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -27,11 +29,64 @@ STATE_KEY = "continuity_marker"
 STATE_VALUE = "continuum-state-survives-restart"
 CAPABILITY = "effect:continuum.marker.write"
 EFFECT_NAME = "continuum.marker.write"
+EFFECT_CLASS = "in_process_sqlite_status_write"
 MEDIATOR = "continuum-persistence-slice-effect-boundary"
+SCHEMA = "asentxia.continuum.persistence-slice.2a.v1"
+SCOPE = "process restart on the same host; persistence beyond process/session only"
+CLAIM_CEILING = (
+    "Bounded Decision #2A internal proof only; no claim is made beyond AC-1 through AC-8."
+)
+REQUIRED_EVENTS = (
+    "computer.created",
+    "vera.created",
+    "process.phase1.ready_for_restart",
+    "process.phase2.reconstituted",
+    "state.written",
+    "state.read",
+    "grant.issued",
+    "grant.revoked",
+    "effect.committed",
+    "effect.denied",
+)
+REQUIRED_EVENTS_SET = set(REQUIRED_EVENTS)
+REQUIRED_TOP = (
+    "schema",
+    "computer_id",
+    "vera_id",
+    "discontinuity",
+    "state",
+    "authority",
+    "execution",
+    "evidence",
+    "acceptance",
+    "claim_ceiling",
+    "identity_continuity",
+    "excluded_scope",
+    "scope",
+)
+REQUIRED_TOP_SET = set(REQUIRED_TOP)
+# Claims this slice must mark unproven. AC-8 fails if any flag is True.
+EXCLUDED_SCOPE_KEYS = (
+    "host_migration",
+    "crash_recovery",
+    "model_provider_replacement",
+    "external_side_effect",
+    "third_party_verification",
+    "cryptographic_notarization",
+    "production_readiness",
+)
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def host_id() -> str:
+    return socket.gethostname()
+
+
+def excluded_scope_template() -> dict[str, bool]:
+    return {key: False for key in EXCLUDED_SCOPE_KEYS}
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -101,7 +156,7 @@ def ensure_identity(conn: sqlite3.Connection) -> sqlite3.Row:
         (computer_id, vera_id, created_at),
     )
     conn.commit()
-    evidence(conn, "computer.created", {"computer_id": computer_id})
+    evidence(conn, "computer.created", {"computer_id": computer_id, "host": host_id()})
     evidence(conn, "vera.created", {"vera_id": vera_id, "computer_id": computer_id})
     return conn.execute("SELECT * FROM identity WHERE singleton=1").fetchone()
 
@@ -110,7 +165,7 @@ def phase1(db_path: Path, artifact_path: Path) -> dict[str, Any]:
     del artifact_path
     conn = connect(db_path)
     ident = ensure_identity(conn)
-    evidence(conn, "process.phase1.started", {"phase": "pre_restart"})
+    evidence(conn, "process.phase1.started", {"phase": "pre_restart", "host": host_id()})
     conn.execute(
         "INSERT OR REPLACE INTO durable_state(key,value,written_at) VALUES(?,?,?)",
         (STATE_KEY, STATE_VALUE, now_iso()),
@@ -119,7 +174,8 @@ def phase1(db_path: Path, artifact_path: Path) -> dict[str, Any]:
     evidence(conn, "state.written", {"key": STATE_KEY, "value": STATE_VALUE})
 
     existing = conn.execute(
-        "SELECT * FROM grants WHERE capability=? ORDER BY issued_at DESC LIMIT 1", (CAPABILITY,)
+        "SELECT * FROM grants WHERE capability=? ORDER BY issued_at DESC LIMIT 1",
+        (CAPABILITY,),
     ).fetchone()
     if existing and existing["state"] == "ACTIVE":
         grant_id = existing["grant_id"]
@@ -130,9 +186,17 @@ def phase1(db_path: Path, artifact_path: Path) -> dict[str, Any]:
             (grant_id, CAPABILITY, now_iso()),
         )
         conn.commit()
-        evidence(conn, "grant.issued", {"grant_id": grant_id, "capability": CAPABILITY, "scope": EFFECT_NAME})
+        evidence(
+            conn,
+            "grant.issued",
+            {"grant_id": grant_id, "capability": CAPABILITY, "scope": EFFECT_NAME},
+        )
 
-    evidence(conn, "process.phase1.ready_for_restart", {"grant_id": grant_id})
+    evidence(
+        conn,
+        "process.phase1.ready_for_restart",
+        {"grant_id": grant_id, "host": host_id()},
+    )
     result = {
         "computer_id": ident["computer_id"],
         "vera_id": ident["vera_id"],
@@ -146,7 +210,8 @@ def phase1(db_path: Path, artifact_path: Path) -> dict[str, Any]:
 
 def mediate_effect(conn: sqlite3.Connection, attempt_id: str) -> str:
     grant = conn.execute(
-        "SELECT * FROM grants WHERE capability=? ORDER BY issued_at DESC LIMIT 1", (CAPABILITY,)
+        "SELECT * FROM grants WHERE capability=? ORDER BY issued_at DESC LIMIT 1",
+        (CAPABILITY,),
     ).fetchone()
     outcome = "COMMITTED" if grant and grant["state"] == "ACTIVE" else "DENIED"
     conn.execute(
@@ -160,6 +225,7 @@ def mediate_effect(conn: sqlite3.Connection, attempt_id: str) -> str:
         {
             "attempt_id": attempt_id,
             "effect_name": EFFECT_NAME,
+            "effect_class": EFFECT_CLASS,
             "capability": CAPABILITY,
             "mediator": MEDIATOR,
             "grant_state": grant["state"] if grant else "ABSENT",
@@ -170,7 +236,8 @@ def mediate_effect(conn: sqlite3.Connection, attempt_id: str) -> str:
 
 def revoke_grant(conn: sqlite3.Connection) -> str:
     grant = conn.execute(
-        "SELECT * FROM grants WHERE capability=? ORDER BY issued_at DESC LIMIT 1", (CAPABILITY,)
+        "SELECT * FROM grants WHERE capability=? ORDER BY issued_at DESC LIMIT 1",
+        (CAPABILITY,),
     ).fetchone()
     if not grant:
         raise RuntimeError("grant missing")
@@ -183,13 +250,7 @@ def revoke_grant(conn: sqlite3.Connection) -> str:
     return grant["grant_id"]
 
 
-def build_artifact(conn: sqlite3.Connection, phase1_pid: int | None = None) -> dict[str, Any]:
-    ident = conn.execute("SELECT * FROM identity WHERE singleton=1").fetchone()
-    state = conn.execute("SELECT * FROM durable_state WHERE key=?", (STATE_KEY,)).fetchone()
-    grant = conn.execute(
-        "SELECT * FROM grants WHERE capability=? ORDER BY issued_at DESC LIMIT 1", (CAPABILITY,)
-    ).fetchone()
-    effect_rows = conn.execute("SELECT * FROM effects ORDER BY occurred_at").fetchall()
+def _events_from_db(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     events = []
     for row in conn.execute("SELECT * FROM evidence ORDER BY seq").fetchall():
         events.append(
@@ -201,52 +262,197 @@ def build_artifact(conn: sqlite3.Connection, phase1_pid: int | None = None) -> d
                 "payload": json.loads(row["payload_json"]),
             }
         )
-    pids = []
+    return events
+
+
+def _first_event(events: list[dict[str, Any]], kind: str) -> dict[str, Any]:
+    for event in events:
+        if event.get("kind") == kind:
+            return event
+    return {}
+
+
+def _payload(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def compute_acceptance(data: dict[str, Any]) -> dict[str, bool]:
+    """Recompute AC-1..AC-8 from raw artifact fields. Ignores stored acceptance."""
+    events = data.get("evidence")
+    if not isinstance(events, list):
+        events = []
+    kinds = [event.get("kind") for event in events]
+    seqs = [event.get("seq") for event in events]
+    sequential = seqs == list(range(1, len(seqs) + 1)) and bool(seqs)
+
+    disc = data.get("discontinuity") if isinstance(data.get("discontinuity"), dict) else {}
+    ident = data.get("identity_continuity") if isinstance(data.get("identity_continuity"), dict) else {}
+    state = data.get("state") if isinstance(data.get("state"), dict) else {}
+    authority = data.get("authority") if isinstance(data.get("authority"), dict) else {}
+    execution = data.get("execution") if isinstance(data.get("execution"), dict) else {}
+    excluded = data.get("excluded_scope") if isinstance(data.get("excluded_scope"), dict) else {}
+
+    pre_pid = disc.get("pre_restart_process_id")
+    post_pid = disc.get("post_restart_process_id")
+    pids_differ = pre_pid is not None and post_pid is not None and pre_pid != post_pid
+
+    created_computer_event = _first_event(events, "computer.created")
+    created_vera_event = _first_event(events, "vera.created")
+    written_event = _first_event(events, "state.written")
+    read_event = _first_event(events, "state.read")
+    ready_event = _first_event(events, "process.phase1.ready_for_restart")
+    restart_event = _first_event(events, "process.phase2.reconstituted")
+    committed = _first_event(events, "effect.committed")
+    revoked = _first_event(events, "grant.revoked")
+    denied = _first_event(events, "effect.denied")
+    restart_observed = bool(
+        ready_event.get("process_id") == pre_pid
+        and restart_event.get("process_id") == post_pid
+        and pids_differ
+    )
+
+    created_computer = _payload(created_computer_event).get("computer_id")
+    created_vera = _payload(created_vera_event).get("vera_id")
+    vera_bound_computer = _payload(created_vera_event).get("computer_id")
+    written_value = _payload(written_event).get("value")
+    read_value = _payload(read_event).get("value")
+
+    computer_id = data.get("computer_id")
+    vera_id = data.get("vera_id")
+    pre_computer = ident.get("pre_computer_id")
+    post_computer = ident.get("post_computer_id")
+    pre_vera = ident.get("pre_vera_id")
+    post_vera = ident.get("post_vera_id")
+    bound_computer = ident.get("bound_computer_id")
+
+    ac1 = bool(
+        computer_id
+        and created_computer
+        and computer_id == created_computer
+        and computer_id == pre_computer
+        and computer_id == post_computer
+        and pre_computer == post_computer
+        and restart_observed
+    )
+    ac2 = bool(
+        vera_id
+        and created_vera
+        and vera_id == created_vera
+        and vera_id == pre_vera
+        and vera_id == post_vera
+        and pre_vera == post_vera
+        and restart_observed
+    )
+    ac3 = bool(
+        written_value == STATE_VALUE
+        and read_value == STATE_VALUE
+        and state.get("value") == STATE_VALUE
+        and state.get("key") == STATE_KEY
+        and written_event.get("seq")
+        and restart_event.get("seq")
+        and read_event.get("seq")
+        and written_event["seq"] < restart_event["seq"] < read_event["seq"]
+    )
+    ac4 = bool(
+        committed
+        and revoked
+        and denied
+        and committed.get("seq")
+        and revoked.get("seq")
+        and denied.get("seq")
+        and committed["seq"] < revoked["seq"] < denied["seq"]
+        and authority.get("final_state") == "REVOKED"
+        and authority.get("capability") == CAPABILITY
+        and _payload(committed).get("capability") == CAPABILITY
+        and _payload(revoked).get("capability") == CAPABILITY
+        and _payload(denied).get("capability") == CAPABILITY
+        and execution.get("active_grant_outcome") == "COMMITTED"
+        and execution.get("revoked_grant_outcome") == "DENIED"
+    )
+    ac5 = bool(
+        committed
+        and committed.get("process_id") == post_pid
+        and execution.get("mediator") == MEDIATOR
+        and execution.get("effect_class") == EFFECT_CLASS
+        and execution.get("effect_name") == EFFECT_NAME
+    )
+    ac6 = REQUIRED_EVENTS_SET.issubset(set(kinds)) and sequential
+    ac7 = bool(
+        created_computer
+        and vera_bound_computer
+        and bound_computer
+        and created_computer == vera_bound_computer
+        and bound_computer == vera_bound_computer
+        and bound_computer == created_computer
+    )
+    flags_present = all(key in excluded for key in EXCLUDED_SCOPE_KEYS)
+    flags_unproven = flags_present and all(excluded.get(key) is False for key in EXCLUDED_SCOPE_KEYS)
+    same_host = bool(
+        disc.get("pre_restart_host")
+        and disc.get("post_restart_host")
+        and disc.get("pre_restart_host") == disc.get("post_restart_host")
+        and disc.get("type") == "process_restart_same_host"
+    )
+    scope_bounded = data.get("scope") == SCOPE and data.get("claim_ceiling") == CLAIM_CEILING
+    ac8 = bool(flags_unproven and same_host and scope_bounded)
+
+    return {
+        "AC-1": ac1,
+        "AC-2": ac2,
+        "AC-3": ac3,
+        "AC-4": ac4,
+        "AC-5": ac5,
+        "AC-6": ac6,
+        "AC-7": ac7,
+        "AC-8": ac8,
+    }
+
+
+def build_artifact(conn: sqlite3.Connection, phase1_pid: int | None = None) -> dict[str, Any]:
+    ident = conn.execute("SELECT * FROM identity WHERE singleton=1").fetchone()
+    state = conn.execute("SELECT * FROM durable_state WHERE key=?", (STATE_KEY,)).fetchone()
+    grant = conn.execute(
+        "SELECT * FROM grants WHERE capability=? ORDER BY issued_at DESC LIMIT 1",
+        (CAPABILITY,),
+    ).fetchone()
+    effect_rows = conn.execute("SELECT * FROM effects ORDER BY occurred_at").fetchall()
+    events = _events_from_db(conn)
+    pids: list[int] = []
     for event in events:
         if event["process_id"] not in pids:
             pids.append(event["process_id"])
     if phase1_pid is None and pids:
         phase1_pid = pids[0]
     phase2_pid = os.getpid()
-    committed = next((r for r in effect_rows if r["outcome"] == "COMMITTED"), None)
-    denied = next((r for r in effect_rows if r["outcome"] == "DENIED"), None)
-    restart_event = next((e for e in events if e["kind"] == "process.phase2.reconstituted"), None)
-    state_read = next((e for e in events if e["kind"] == "state.read"), None)
+    committed = next((row for row in effect_rows if row["outcome"] == "COMMITTED"), None)
+    denied = next((row for row in effect_rows if row["outcome"] == "DENIED"), None)
 
-    acceptance = {
-        "AC-1": bool(ident and len(pids) >= 2 and phase1_pid != phase2_pid),
-        "AC-2": bool(ident and len(pids) >= 2 and phase1_pid != phase2_pid),
-        "AC-3": bool(state and state["value"] == STATE_VALUE and state_read),
-        "AC-4": bool(committed and denied and grant and grant["state"] == "REVOKED"),
-        "AC-5": bool(committed and restart_event and committed["process_id"] == phase2_pid),
-        "AC-6": all(
-            any(e["kind"] == kind for e in events)
-            for kind in (
-                "computer.created",
-                "vera.created",
-                "process.phase1.ready_for_restart",
-                "process.phase2.reconstituted",
-                "state.written",
-                "state.read",
-                "grant.issued",
-                "grant.revoked",
-                "effect.committed",
-                "effect.denied",
-            )
-        ),
-        "AC-7": bool(ident and len(pids) >= 2 and phase1_pid != phase2_pid and state_read),
-        "AC-8": True,
-    }
-    return {
-        "schema": "asentxia.continuum.persistence-slice.2a.v1",
+    created_computer = _payload(_first_event(events, "computer.created")).get("computer_id")
+    created_vera = _payload(_first_event(events, "vera.created")).get("vera_id")
+    vera_bound_computer = _payload(_first_event(events, "vera.created")).get("computer_id")
+    phase1_host = _payload(_first_event(events, "process.phase1.ready_for_restart")).get("host")
+    phase2_host = _payload(_first_event(events, "process.phase2.reconstituted")).get("host")
+
+    artifact: dict[str, Any] = {
+        "schema": SCHEMA,
         "generated_at": now_iso(),
-        "scope": "process restart on the same host; persistence beyond process/session only",
+        "scope": SCOPE,
         "computer_id": ident["computer_id"] if ident else None,
         "vera_id": ident["vera_id"] if ident else None,
+        "identity_continuity": {
+            "pre_computer_id": created_computer,
+            "post_computer_id": ident["computer_id"] if ident else None,
+            "pre_vera_id": created_vera,
+            "post_vera_id": ident["vera_id"] if ident else None,
+            "bound_computer_id": vera_bound_computer,
+        },
         "discontinuity": {
             "type": "process_restart_same_host",
             "pre_restart_process_id": phase1_pid,
             "post_restart_process_id": phase2_pid,
+            "pre_restart_host": phase1_host,
+            "post_restart_host": phase2_host,
         },
         "state": {"key": STATE_KEY, "value": state["value"] if state else None},
         "authority": {
@@ -256,14 +462,17 @@ def build_artifact(conn: sqlite3.Connection, phase1_pid: int | None = None) -> d
         },
         "execution": {
             "effect_name": EFFECT_NAME,
+            "effect_class": EFFECT_CLASS,
             "mediator": MEDIATOR,
             "active_grant_outcome": committed["outcome"] if committed else None,
             "revoked_grant_outcome": denied["outcome"] if denied else None,
         },
+        "excluded_scope": excluded_scope_template(),
         "evidence": events,
-        "acceptance": acceptance,
-        "claim_ceiling": "Bounded Decision #2A internal proof only; no claim is made beyond AC-1 through AC-8.",
+        "claim_ceiling": CLAIM_CEILING,
     }
+    artifact["acceptance"] = compute_acceptance(artifact)
+    return artifact
 
 
 def phase2(db_path: Path, artifact_path: Path) -> dict[str, Any]:
@@ -271,7 +480,7 @@ def phase2(db_path: Path, artifact_path: Path) -> dict[str, Any]:
     ident = conn.execute("SELECT * FROM identity WHERE singleton=1").fetchone()
     if not ident:
         raise RuntimeError("phase1 identity missing")
-    evidence(conn, "process.phase2.reconstituted", {"phase": "post_restart"})
+    evidence(conn, "process.phase2.reconstituted", {"phase": "post_restart", "host": host_id()})
 
     state = conn.execute("SELECT * FROM durable_state WHERE key=?", (STATE_KEY,)).fetchone()
     if not state:
@@ -305,49 +514,23 @@ def phase2(db_path: Path, artifact_path: Path) -> dict[str, Any]:
 
 def verify_artifact(artifact_path: Path) -> dict[str, Any]:
     data = json.loads(artifact_path.read_text(encoding="utf-8"))
-    required_top = {
-        "schema",
-        "computer_id",
-        "vera_id",
-        "discontinuity",
-        "state",
-        "authority",
-        "execution",
-        "evidence",
-        "acceptance",
-        "claim_ceiling",
-    }
-    required_events = {
-        "computer.created",
-        "vera.created",
-        "process.phase1.ready_for_restart",
-        "process.phase2.reconstituted",
-        "state.written",
-        "state.read",
-        "grant.issued",
-        "grant.revoked",
-        "effect.committed",
-        "effect.denied",
-    }
-    kinds = {e.get("kind") for e in data.get("evidence", [])}
-    seqs = [e.get("seq") for e in data.get("evidence", [])]
-    sequential = seqs == list(range(1, len(seqs) + 1))
-    acceptance = data.get("acceptance", {})
-    valid = (
-        required_top.issubset(data)
-        and data.get("schema") == "asentxia.continuum.persistence-slice.2a.v1"
-        and data.get("discontinuity", {}).get("type") == "process_restart_same_host"
-        and data.get("discontinuity", {}).get("pre_restart_process_id")
-        != data.get("discontinuity", {}).get("post_restart_process_id")
-        and required_events.issubset(kinds)
-        and sequential
-        and all(acceptance.get(f"AC-{i}") is True for i in range(1, 9))
+    events = data.get("evidence") if isinstance(data.get("evidence"), list) else []
+    seqs = [event.get("seq") for event in events]
+    sequential = seqs == list(range(1, len(seqs) + 1)) and bool(seqs)
+    acceptance = compute_acceptance(data)
+    disc = data.get("discontinuity") if isinstance(data.get("discontinuity"), dict) else {}
+    structural = (
+        REQUIRED_TOP_SET.issubset(data)
+        and data.get("schema") == SCHEMA
+        and disc.get("type") == "process_restart_same_host"
     )
+    valid = bool(structural and all(acceptance.values()))
     return {
         "valid": valid,
-        "acceptance": {f"AC-{i}": acceptance.get(f"AC-{i}") is True for i in range(1, 9)},
-        "evidence_events": len(data.get("evidence", [])),
+        "acceptance": acceptance,
+        "evidence_events": len(events),
         "sequence_contiguous": sequential,
+        "producer_acceptance_ignored": True,
     }
 
 
@@ -412,7 +595,7 @@ def main() -> int:
         result = run_all(args.workdir)
     else:
         raise AssertionError(args.command)
-    print(json.dumps(result, sort_keys=True))
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result.get("valid", True) else 1
 
 
