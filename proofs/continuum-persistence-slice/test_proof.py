@@ -153,6 +153,38 @@ class ContinuumPersistenceSliceTest(unittest.TestCase):
         self.assertFalse(computed["AC-6"])
         self.assertEqual(failed_criteria(computed), ["AC-6"], computed)
 
+    def test_ac4_fails_when_denied_capability_differs(self):
+        _, _, data = self._run_slice()
+        mutated = deepcopy(data)
+        denied = next(event for event in mutated["evidence"] if event["kind"] == "effect.denied")
+        denied["payload"]["capability"] = "effect:other.write"
+        mutated["acceptance"] = {f"AC-{i}": True for i in range(1, 9)}
+        computed = self.proof.compute_acceptance(mutated)
+        self.assertFalse(computed["AC-4"])
+        self.assertEqual(failed_criteria(computed), ["AC-4"], computed)
+
+    def test_ac1_and_ac2_fail_when_evidence_pids_are_not_a_restart(self):
+        _, _, data = self._run_slice()
+        mutated = deepcopy(data)
+        post_pid = mutated["discontinuity"]["post_restart_process_id"]
+        for event in mutated["evidence"]:
+            event["process_id"] = post_pid
+        mutated["acceptance"] = {f"AC-{i}": True for i in range(1, 9)}
+        computed = self.proof.compute_acceptance(mutated)
+        self.assertFalse(computed["AC-1"])
+        self.assertFalse(computed["AC-2"])
+        self.assertTrue(computed["AC-3"])
+        self.assertTrue(computed["AC-8"])
+
+    def test_ac8_fails_when_claim_ceiling_is_unbounded(self):
+        _, _, data = self._run_slice()
+        mutated = deepcopy(data)
+        mutated["claim_ceiling"] = "this is not the same host; we claim host migration"
+        mutated["acceptance"] = {f"AC-{i}": True for i in range(1, 9)}
+        computed = self.proof.compute_acceptance(mutated)
+        self.assertFalse(computed["AC-8"])
+        self.assertEqual(failed_criteria(computed), ["AC-8"], computed)
+
     def test_ac7_fails_when_only_vera_computer_binding_breaks(self):
         _, _, data = self._run_slice()
         mutated = deepcopy(data)

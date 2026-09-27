@@ -301,10 +301,16 @@ def compute_acceptance(data: dict[str, Any]) -> dict[str, bool]:
     created_vera_event = _first_event(events, "vera.created")
     written_event = _first_event(events, "state.written")
     read_event = _first_event(events, "state.read")
+    ready_event = _first_event(events, "process.phase1.ready_for_restart")
     restart_event = _first_event(events, "process.phase2.reconstituted")
     committed = _first_event(events, "effect.committed")
     revoked = _first_event(events, "grant.revoked")
     denied = _first_event(events, "effect.denied")
+    restart_observed = bool(
+        ready_event.get("process_id") == pre_pid
+        and restart_event.get("process_id") == post_pid
+        and pids_differ
+    )
 
     created_computer = _payload(created_computer_event).get("computer_id")
     created_vera = _payload(created_vera_event).get("vera_id")
@@ -327,7 +333,7 @@ def compute_acceptance(data: dict[str, Any]) -> dict[str, bool]:
         and computer_id == pre_computer
         and computer_id == post_computer
         and pre_computer == post_computer
-        and pids_differ
+        and restart_observed
     )
     ac2 = bool(
         vera_id
@@ -336,7 +342,7 @@ def compute_acceptance(data: dict[str, Any]) -> dict[str, bool]:
         and vera_id == pre_vera
         and vera_id == post_vera
         and pre_vera == post_vera
-        and pids_differ
+        and restart_observed
     )
     ac3 = bool(
         written_value == STATE_VALUE
@@ -357,6 +363,10 @@ def compute_acceptance(data: dict[str, Any]) -> dict[str, bool]:
         and denied.get("seq")
         and committed["seq"] < revoked["seq"] < denied["seq"]
         and authority.get("final_state") == "REVOKED"
+        and authority.get("capability") == CAPABILITY
+        and _payload(committed).get("capability") == CAPABILITY
+        and _payload(revoked).get("capability") == CAPABILITY
+        and _payload(denied).get("capability") == CAPABILITY
         and execution.get("active_grant_outcome") == "COMMITTED"
         and execution.get("revoked_grant_outcome") == "DENIED"
     )
@@ -376,8 +386,6 @@ def compute_acceptance(data: dict[str, Any]) -> dict[str, bool]:
         and bound_computer == vera_bound_computer
         and bound_computer == created_computer
     )
-    scope = str(data.get("scope") or "")
-    ceiling = str(data.get("claim_ceiling") or "")
     flags_present = all(key in excluded for key in EXCLUDED_SCOPE_KEYS)
     flags_unproven = flags_present and all(excluded.get(key) is False for key in EXCLUDED_SCOPE_KEYS)
     same_host = bool(
@@ -386,7 +394,7 @@ def compute_acceptance(data: dict[str, Any]) -> dict[str, bool]:
         and disc.get("pre_restart_host") == disc.get("post_restart_host")
         and disc.get("type") == "process_restart_same_host"
     )
-    scope_bounded = "same host" in scope.lower() and "no claim is made beyond" in ceiling.lower()
+    scope_bounded = data.get("scope") == SCOPE and data.get("claim_ceiling") == CLAIM_CEILING
     ac8 = bool(flags_unproven and same_host and scope_bounded)
 
     return {

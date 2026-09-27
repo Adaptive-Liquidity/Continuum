@@ -33,7 +33,7 @@ AC-8 is not a literal `true`. It is the conjunction of:
 
 1. `excluded_scope` contains every required key (`host_migration`, `crash_recovery`, `model_provider_replacement`, `external_side_effect`, `third_party_verification`, `cryptographic_notarization`, `production_readiness`) and each value is JSON `false` (not proven).
 2. `discontinuity.pre_restart_host` equals `discontinuity.post_restart_host`, both are present, and `discontinuity.type` is `process_restart_same_host`.
-3. `scope` mentions same-host process restart and `claim_ceiling` states that no claim is made beyond AC-1 through AC-8.
+3. `scope` and `claim_ceiling` equal the harness constants (same-host process restart; no claim beyond AC-1 through AC-8). Substring matches are not enough.
 
 Marking `excluded_scope.host_migration` true fails AC-8 only. Matching hostnames do not prove host migration; they only keep this run inside the declared ceiling.
 
