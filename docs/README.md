@@ -3,6 +3,7 @@
 | Document | Contents |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Hierarchy, two runtime stacks, Effect Boundary, vendored lineage, claim ceilings |
+| [CAPABILITIES.md](CAPABILITIES.md) | Untested orchestrator, scaffolds, and design goals |
 | [docs/DCA_RESPONSIBILITY_MAP.md](docs/DCA_RESPONSIBILITY_MAP.md) | The seven DCA responsibilities and current repository surfaces |
 | [evidence/CURRENT_CLAIMS_AND_MATURITY_LEDGER.md](evidence/CURRENT_CLAIMS_AND_MATURITY_LEDGER.md) | Verified Decision #2A observables and what is not cleared |
 | [../artifact/README.md](../artifact/README.md) | P00 artifact package (`make reproduce-p00`) |
