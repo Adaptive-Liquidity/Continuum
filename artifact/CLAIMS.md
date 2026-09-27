@@ -6,8 +6,8 @@ Human-readable mirror of `artifact/manifest.json`.
 |---|---|---|---|---|---|
 | DEF-DCA-7 | DEFINITION | all | Seven separable systems responsibilities around a persistent principal | manuscript §4 | Architecture statement only |
 | DEF-VERA | DEFINITION | Authority / Cognition Boundary | VERA is a persistent principal independent of one model/process/host | manuscript Def. 1 | Not legal personhood or formal verification |
-| EXP-2A-AC1 | EXPERIMENTALLY VERIFIED | Environment | Same Continuum Computer ID across same-host process restart | #2A artifact AC-1 | Process/session only |
-| EXP-2A-AC2 | EXPERIMENTALLY VERIFIED | Cognition Boundary | Same VERA ID across same-host process restart | #2A artifact AC-2 | Process/session only |
+| EXP-2A-AC1 | EXPERIMENTALLY VERIFIED | Environment | Same Continuum Computer ID across same-host process restart | #2A artifact AC-1 | Same-host clean process restart only |
+| EXP-2A-AC2 | EXPERIMENTALLY VERIFIED | Cognition Boundary | Same VERA ID across same-host process restart | #2A artifact AC-2 | Same-host clean process restart only |
 | EXP-2A-AC3 | EXPERIMENTALLY VERIFIED | State | Durable marker written before restart is read after | #2A artifact AC-3 | One key/value |
 | EXP-2A-AC4 | EXPERIMENTALLY VERIFIED | Authority | Active grant commits; revocation denies the same capability | #2A artifact AC-4 | Local grant table |
 | EXP-2A-AC5 | EXPERIMENTALLY VERIFIED | Execution | Post-restart effect goes through a non-model mediator | #2A artifact AC-5 | In-process SQLite status write; not NEXUS |

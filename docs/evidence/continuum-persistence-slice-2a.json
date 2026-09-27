@@ -12,40 +12,167 @@
   "authority": {
     "capability": "effect:continuum.marker.write",
     "final_state": "REVOKED",
-    "grant_id": "grant-c2880e72-9c50-4d9c-ae77-536e2e7a0631"
+    "grant_id": "grant-fe4acfaf-d39c-428c-89ef-b9e687660b3d"
   },
   "claim_ceiling": "Bounded Decision #2A internal proof only; no claim is made beyond AC-1 through AC-8.",
-  "computer_id": "continuum-computer-2ff56de7-bf09-49b4-9b11-7fb22554016b",
+  "computer_id": "continuum-computer-f2d631ed-32c3-4ac4-b909-2c28c50740c2",
   "discontinuity": {
-    "post_restart_process_id": 869,
-    "pre_restart_process_id": 859,
+    "post_restart_host": "cursor",
+    "post_restart_process_id": 3945,
+    "pre_restart_host": "cursor",
+    "pre_restart_process_id": 3944,
     "type": "process_restart_same_host"
   },
   "evidence": [
-    {"kind":"computer.created","process_id":859,"seq":1},
-    {"kind":"vera.created","process_id":859,"seq":2},
-    {"kind":"process.phase1.started","process_id":859,"seq":3},
-    {"kind":"state.written","process_id":859,"seq":4},
-    {"kind":"grant.issued","process_id":859,"seq":5},
-    {"kind":"process.phase1.ready_for_restart","process_id":859,"seq":6},
-    {"kind":"process.phase2.reconstituted","process_id":869,"seq":7},
-    {"kind":"state.read","process_id":869,"seq":8},
-    {"kind":"effect.committed","process_id":869,"seq":9},
-    {"kind":"grant.revoked","process_id":869,"seq":10},
-    {"kind":"effect.denied","process_id":869,"seq":11}
+    {
+      "kind": "computer.created",
+      "occurred_at": "2026-09-27T22:00:13.690289+00:00",
+      "payload": {
+        "computer_id": "continuum-computer-f2d631ed-32c3-4ac4-b909-2c28c50740c2",
+        "host": "cursor"
+      },
+      "process_id": 3944,
+      "seq": 1
+    },
+    {
+      "kind": "vera.created",
+      "occurred_at": "2026-09-27T22:00:13.690482+00:00",
+      "payload": {
+        "computer_id": "continuum-computer-f2d631ed-32c3-4ac4-b909-2c28c50740c2",
+        "vera_id": "vera-3f92bdae-72cf-44e8-8e0f-42c81e22a3c5"
+      },
+      "process_id": 3944,
+      "seq": 2
+    },
+    {
+      "kind": "process.phase1.started",
+      "occurred_at": "2026-09-27T22:00:13.690636+00:00",
+      "payload": {
+        "host": "cursor",
+        "phase": "pre_restart"
+      },
+      "process_id": 3944,
+      "seq": 3
+    },
+    {
+      "kind": "state.written",
+      "occurred_at": "2026-09-27T22:00:13.690899+00:00",
+      "payload": {
+        "key": "continuity_marker",
+        "value": "continuum-state-survives-restart"
+      },
+      "process_id": 3944,
+      "seq": 4
+    },
+    {
+      "kind": "grant.issued",
+      "occurred_at": "2026-09-27T22:00:13.691230+00:00",
+      "payload": {
+        "capability": "effect:continuum.marker.write",
+        "grant_id": "grant-fe4acfaf-d39c-428c-89ef-b9e687660b3d",
+        "scope": "continuum.marker.write"
+      },
+      "process_id": 3944,
+      "seq": 5
+    },
+    {
+      "kind": "process.phase1.ready_for_restart",
+      "occurred_at": "2026-09-27T22:00:13.691374+00:00",
+      "payload": {
+        "grant_id": "grant-fe4acfaf-d39c-428c-89ef-b9e687660b3d",
+        "host": "cursor"
+      },
+      "process_id": 3944,
+      "seq": 6
+    },
+    {
+      "kind": "process.phase2.reconstituted",
+      "occurred_at": "2026-09-27T22:00:13.733238+00:00",
+      "payload": {
+        "host": "cursor",
+        "phase": "post_restart"
+      },
+      "process_id": 3945,
+      "seq": 7
+    },
+    {
+      "kind": "state.read",
+      "occurred_at": "2026-09-27T22:00:13.734286+00:00",
+      "payload": {
+        "key": "continuity_marker",
+        "value": "continuum-state-survives-restart"
+      },
+      "process_id": 3945,
+      "seq": 8
+    },
+    {
+      "kind": "effect.committed",
+      "occurred_at": "2026-09-27T22:00:13.735788+00:00",
+      "payload": {
+        "attempt_id": "attempt-6c38e52b-818b-404e-b094-3e241f5491ea",
+        "capability": "effect:continuum.marker.write",
+        "effect_class": "in_process_sqlite_status_write",
+        "effect_name": "continuum.marker.write",
+        "grant_state": "ACTIVE",
+        "mediator": "continuum-persistence-slice-effect-boundary"
+      },
+      "process_id": 3945,
+      "seq": 9
+    },
+    {
+      "kind": "grant.revoked",
+      "occurred_at": "2026-09-27T22:00:13.737545+00:00",
+      "payload": {
+        "capability": "effect:continuum.marker.write",
+        "grant_id": "grant-fe4acfaf-d39c-428c-89ef-b9e687660b3d"
+      },
+      "process_id": 3945,
+      "seq": 10
+    },
+    {
+      "kind": "effect.denied",
+      "occurred_at": "2026-09-27T22:00:13.737988+00:00",
+      "payload": {
+        "attempt_id": "attempt-dbe4dddb-1ab6-4562-9a58-5eda420ab529",
+        "capability": "effect:continuum.marker.write",
+        "effect_class": "in_process_sqlite_status_write",
+        "effect_name": "continuum.marker.write",
+        "grant_state": "REVOKED",
+        "mediator": "continuum-persistence-slice-effect-boundary"
+      },
+      "process_id": 3945,
+      "seq": 11
+    }
   ],
+  "excluded_scope": {
+    "crash_recovery": false,
+    "cryptographic_notarization": false,
+    "external_side_effect": false,
+    "host_migration": false,
+    "model_provider_replacement": false,
+    "production_readiness": false,
+    "third_party_verification": false
+  },
   "execution": {
     "active_grant_outcome": "COMMITTED",
+    "effect_class": "in_process_sqlite_status_write",
     "effect_name": "continuum.marker.write",
     "mediator": "continuum-persistence-slice-effect-boundary",
     "revoked_grant_outcome": "DENIED"
   },
-  "generated_at": "2026-09-15T09:47:40Z",
+  "generated_at": "2026-09-27T22:00:13.738314+00:00",
+  "identity_continuity": {
+    "bound_computer_id": "continuum-computer-f2d631ed-32c3-4ac4-b909-2c28c50740c2",
+    "post_computer_id": "continuum-computer-f2d631ed-32c3-4ac4-b909-2c28c50740c2",
+    "post_vera_id": "vera-3f92bdae-72cf-44e8-8e0f-42c81e22a3c5",
+    "pre_computer_id": "continuum-computer-f2d631ed-32c3-4ac4-b909-2c28c50740c2",
+    "pre_vera_id": "vera-3f92bdae-72cf-44e8-8e0f-42c81e22a3c5"
+  },
   "schema": "asentxia.continuum.persistence-slice.2a.v1",
   "scope": "process restart on the same host; persistence beyond process/session only",
   "state": {
     "key": "continuity_marker",
     "value": "continuum-state-survives-restart"
   },
-  "vera_id": "vera-cf4f1d9c-ddd6-400c-90ae-00c7d9d10773"
+  "vera_id": "vera-3f92bdae-72cf-44e8-8e0f-42c81e22a3c5"
 }

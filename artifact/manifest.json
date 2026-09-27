@@ -10,7 +10,7 @@
       "responsibility": "Environment",
       "artifact": "docs/evidence/continuum-persistence-slice-2a.json",
       "reproduction": "make reproduce-p00",
-      "limitation": "same-host process restart only"
+      "limitation": "same-host clean process restart only"
     },
     {
       "id": "EXP-2A-AC2",
@@ -18,7 +18,7 @@
       "responsibility": "Cognition Boundary",
       "artifact": "docs/evidence/continuum-persistence-slice-2a.json",
       "reproduction": "make reproduce-p00",
-      "limitation": "same-host process restart only"
+      "limitation": "same-host clean process restart only"
     },
     {
       "id": "EXP-2A-AC5",
