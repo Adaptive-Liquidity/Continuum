@@ -5,7 +5,7 @@ Inspected public revisions for P00 implementation-realization claims.
 | System | Repository | Pinned revision | Role |
 |---|---|---|---|
 | Continuum / DCA doctrine | Adaptive-Liquidity/Continuum | a47421e58de73def7e6aae6ee3e90ac5a6be8caf | Artifact package + Makefile. Harness rewrite rides this tree. |
-| FLOKS / Agent Computer | Adaptive-Liquidity/floks-pc | 35b5e7149e96a8360ec0dc6411b438392fa91ca4 | Component evidence only. L0–L3 private-beta. Not integrated in #2A. |
+| Environment lineage (vendored) | Adaptive-Liquidity/floks-pc | 35b5e7149e96a8360ec0dc6411b438392fa91ca4 | Component evidence only. Historical directory name. Not integrated in #2A. |
 | AEON-IQ | Adaptive-Liquidity/AEON-IQ-temp | d5866e85edb3a7f7ea7186854655981ca73760f4 | Recovery mirror of adaptiveliquidity/AEON-IQ. Component evidence only. Not Continuum state. |
 | Genesis Runtime | Adaptive-Liquidity/genesis-runtime | dfd9c69a45302034a41e997f03655c0452e93010 | Component evidence only. R0–R2 in-memory authority. Not integrated in #2A. |
 | NEXUS | Adaptive-Liquidity/Nexus-temp | 2e863998665d5b9a0369dc5cf3f2307b27835e46 | Recovery mirror of adaptiveliquidity/Nexus. Table 6 inspected revision: last human merge after RUSTSEC-2026-0188/0190 wasmtime 45.0.3 bump (f7a1564, 2026-06-29). |

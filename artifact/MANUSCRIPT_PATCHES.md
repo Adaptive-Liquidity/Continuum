@@ -25,7 +25,7 @@ Keep every existing limitation sentence. Do not upgrade any lineage to integrate
 | System | Repository | Pinned revision | Note |
 |---|---|---|---|
 | Continuum / DCA doctrine | Adaptive-Liquidity/Continuum | current publish commit | |
-| FLOKS / floks-pc | Adaptive-Liquidity/floks-pc | 35b5e7149e96 | |
+| Environment lineage (vendored) | Adaptive-Liquidity/floks-pc | 35b5e7149e96 | Historical directory; not a current product |
 | AEON-IQ | Adaptive-Liquidity/AEON-IQ-temp | d5866e85edb3 | Recovery mirror of adaptiveliquidity/AEON-IQ |
 | Genesis Runtime | Adaptive-Liquidity/genesis-runtime | dfd9c69a4530 | |
 | NEXUS | Adaptive-Liquidity/Nexus-temp | f801071de4b0 | Recovery mirror of adaptiveliquidity/Nexus. Pin is the H2 execute_wasi capability-grant test commit, not a benchmark-chart bot commit. |

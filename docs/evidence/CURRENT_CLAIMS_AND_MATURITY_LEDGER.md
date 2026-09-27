@@ -75,7 +75,7 @@ The following supporting systems have repository-native test and/or validation e
 - **AEON-IQ:** Postgres-backed validation, memory retrieval and benchmark proof artifacts.
 - **NEXUS:** WASM/WASI execution, capability gates, snapshots/rollback, replay and Proof Capsule implementation/tests.
 - **Genesis Runtime / AEON Program:** signed identity, attenuation, revocation, expiry and authority lifecycle tests; AEON Program devnet/smoke evidence.
-- **FLOKS / Agent Computer lineage:** authenticated remote Agent Computer path, durable records, CDP accessibility, checkpoint/recovery evidence.
+- **Environment lineage (vendored under `packages/`):** component evidence only; not integrated in Decision #2A and not a Continuum recovery claim.
 - **Agent-Bridge:** narrow scoped cross-system control with authenticated/confirm-gated actions.
 
 These supporting claims remain subject to their repository-specific limitations and should be cited individually in research papers.

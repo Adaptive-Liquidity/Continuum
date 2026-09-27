@@ -1,93 +1,138 @@
 # Continuum
 
-### The flagship DCA implementation for persistent autonomous intelligence.
+**The flagship runtime for Distributed Cognitive Architecture (DCA): a persistent principal, not a disposable model session.**
 
-**Continuum** is Asentxia Systems' flagship implementation of **Distributed Cognitive Architecture (DCA)** and its persistent machine-native runtime substrate.
+[![Decision #2A](https://img.shields.io/badge/Decision%20%232A-working%20and%20tested-3D7A4F)](proofs/continuum-persistence-slice/)
+[![Proof](https://img.shields.io/badge/proof-Python%203%20stdlib-3776AB)](proofs/continuum-persistence-slice/proof.py)
+[![Reproduce](https://img.shields.io/badge/reproduce-make%20reproduce--p00-111)](Makefile)
 
-DCA is the Asentxia-defined systems-level reference architecture for autonomous intelligence that must remain one accountable principal while models, sessions, credentials, processes, runtimes, computers, and hosts change.
+Continuum is Asentxia Systems’ implementation of **DCA** — a systems architecture for autonomous intelligence that must remain **one accountable principal** while models, sessions, credentials, processes, and runtimes change.
 
-> **The principal persists. The components may change.**
+> The principal persists. The components may change.
 
-## Current canonical model
+**Proven today (Decision #2A):** a Continuum Computer ID and a VERA ID survive a clean process restart on the same host; durable state written before the restart is read after it; an active grant commits a mediated effect and revocation refuses the same capability; a verifier recomputes all eight acceptance criteria from raw evidence, not from stored flags.
 
-**Asentxia Systems → Distributed Cognitive Architecture → Continuum → VERA → The Regency**
+```bash
+make reproduce-p00
+```
 
-This is a relationship model, not a literal nesting of software components.
+## Why it exists
 
-- **DCA** defines seven normative architectural responsibilities.
-- **Continuum** is the flagship implementation through which those responsibilities are progressively composed and demonstrated.
-- **VERA** — **Verifiable Entity with Revocable Authority** — is the canonical persistent autonomous principal.
-- **Continuum Computer** is the persistent logical compute environment associated with autonomous operation.
-- **The Regency** is the governance and organizational system for VERAs and multi-VERA structures.
+Most agent stacks bind identity to a chat session, a process, or a model vendor. When the process dies, the “agent” is a new object wearing a familiar name.
 
-## Seven DCA responsibilities
+DCA separates seven responsibilities so identity, state, authority, and evidence can outlive any one inference process. Continuum is the flagship implementation of that separation.
 
-1. **Environment** — the persistent computational boundary and place of operation.
-2. **State** — durable operational, temporal, episodic, and semantic state with lineage and recovery information.
-3. **Authority** — explicit, scoped, revocable authority distinct from technical tool availability.
-4. **Execution** — controlled transformation of authorized intent into real effects.
-5. **Evidence** — independently inspectable records of state transitions, authority, execution, and outcomes.
-6. **Coordination** — structured interaction among independently bounded principals and systems while preserving separation.
-7. **Cognition Boundary** — the explicit interface separating changing intelligence providers from persistent identity, state, authority, and continuity.
+## Architecture
 
-DCA does not define intelligence itself and does not replace models, agent frameworks, or orchestration systems.
+**Asentxia Systems** (company) → **DCA** (reference architecture) → **Continuum** (flagship runtime) → **VERA** (persistent principal). **The Regency** is the governance surface.
 
-## Implementation lineage
+DCA’s seven responsibilities are Environment, State, Authority, Execution, Evidence, Coordination, and Cognition Boundary. The **Effect Boundary** is cross-cutting: cognition proposes, authority constrains, execution mediates, evidence records. It is not an eighth responsibility.
 
-Continuum integrates and inherits technical lineage from multiple systems. These lineage names are not automatically current standalone public products.
+```mermaid
+flowchart TB
+  company[Asentxia Systems]
+  dca[DCA — seven responsibilities]
+  runtime[Continuum — flagship runtime]
+  vera[VERA — persistent principal]
+  computer[Continuum Computer — environment]
+  regency[The Regency — governance surface]
+  effect[Effect Boundary — cross-cutting]
 
-| Responsibility | Primary implementation lineage |
-|---|---|
-| Environment | FLOKS / Agent Computer lineage |
-| State | AEON-IQ / Context Kernel lineage |
-| Authority | Genesis Runtime / AEON Program / authority research |
-| Execution | NEXUS / Nexus-IQ |
-| Evidence | Proof Capsules, receipts, Context Kernel, SPX402 lineage |
-| Coordination | Agent-Bridge and related coordination research |
-| Cognition Boundary | Model/provider-neutral interfaces across the architecture |
+  company --> dca
+  dca --> runtime
+  runtime --> vera
+  runtime --> computer
+  runtime -.-> regency
+  runtime --- effect
+```
 
-## Decision #2A — Continuum Persistence Slice
+| Stack | Role | Maturity |
+|---|---|---|
+| [`proofs/continuum-persistence-slice/`](proofs/continuum-persistence-slice/) | Stdlib two-process SQLite proof (Decision #2A) | Working and tested |
+| [`backend/`](backend/) + [`frontend/`](frontend/) | Mongo orchestrator and ops dashboard | Working but untested |
 
-The current internal genesis proof intentionally demonstrates a narrow subset of the Continuum thesis:
+Deeper map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/docs/DCA_RESPONSIBILITY_MAP.md](docs/docs/DCA_RESPONSIBILITY_MAP.md)
 
-- one Continuum Computer
-- one VERA
-- one process restart on the same host
-- durable state written before restart and read afterward
-- one explicit scoped revocable grant
-- one mediated post-reconstitution effect
-- refusal of the same capability after revocation
-- one independently inspectable structured evidence record
+## Capabilities
 
-The reproducible proof harness is in [`proofs/continuum-persistence-slice`](proofs/continuum-persistence-slice).
+| Capability | Code | Proof or test |
+|---|---|---|
+| Continuum Computer ID across same-host process restart | [`proof.py`](proofs/continuum-persistence-slice/proof.py) (`identity`, `computer.created`) | AC-1 in [`test_proof.py`](proofs/continuum-persistence-slice/test_proof.py) |
+| VERA ID across same-host process restart | same harness (`vera.created`, `identity_continuity`) | AC-2 |
+| Durable marker written before restart, read after | SQLite `durable_state` | AC-3 |
+| Scoped grant: commit, then revoke, then deny same capability | SQLite `grants` / `effects` | AC-4 |
+| Post-restart effect through a non-model mediator | `mediate_effect()` — `in_process_sqlite_status_write` | AC-5 |
+| Structured evidence; verifier recomputes ACs from raw fields | `compute_acceptance`, `verify_artifact` | AC-6, AC-8 |
+| VERA remains bound to the same Computer | `identity_continuity.bound_computer_id` | AC-7 |
+| Public proof page (static HTML contract) | [`public/proof/continuum-persistence/index.html`](public/proof/continuum-persistence/index.html) | [`test_public_page.py`](proofs/public-proof-page/test_public_page.py) |
 
-This proof establishes persistence beyond the tested process/session discontinuity only. It does **not** establish host or machine migration, model-provider swap, coordination completeness, universal recovery, production readiness, or complete implementation of all seven DCA responsibilities.
+**In progress:** Mongo orchestrator, ops dashboard, Regency, scaffolds, and design goals — [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
-## Current implementation surfaces
+## Quickstart
 
-The repository currently contains implementation surfaces for:
+Python 3.12 and `make`. Stdlib only; no network or secrets.
 
-- VERA identity and lifecycle state
-- runtime placement / Continuum Computer lineage
-- durable memory and state
-- scoped authority grants and revocation
-- mediated effects
-- evidence records and proof artifacts
-- sessions and handoff structures
-- Regency governance models
-- packaged lineage implementations including NEXUS, AEON-IQ, FLOKS-PC, Genesis, Nexus-IQ, and Context Kernel
+```bash
+python3 --version
+make reproduce-p00
+```
 
-Implementation existence and architecture requirements are separate from maturity claims. Public maturity statements must be tied to the current claims and evidence ledger.
+This runs the unit suite, a fresh two-process proof, and a separate verify step.
 
-## Claim discipline
+```bash
+python3 -m unittest -v proofs/continuum-persistence-slice/test_proof.py
+python3 -m unittest -v proofs/public-proof-page/test_public_page.py
+make verify-evidence
+```
 
-Do not infer from this repository that:
+## Reproduce the proof
 
-- DCA is an externally established industry standard;
-- Continuum completely implements all seven responsibilities;
-- every VERA continuity property has been demonstrated across every substrate;
-- host/machine migration or model-provider swap is verified;
-- all lineage research has been integrated;
-- security, isolation, recovery, or coordination are universal or production-complete.
+Harness and runbook: [`proofs/continuum-persistence-slice/`](proofs/continuum-persistence-slice/). Scope: see [Limits and non-goals](#limits-and-non-goals).
 
-See the evidence records and current claims ledger before making capability or maturity claims.
+```bash
+make reproduce-p00
+```
+
+**Expected** (UUIDs and PIDs change each run):
+
+- `python3 -m unittest -v proofs/continuum-persistence-slice/test_proof.py` — **15 tests, `OK`**
+- `proof.py run` — `"valid": true`, AC-1 through AC-8 `true`, `"evidence_events": 11`, `"sequence_contiguous": true`, `"producer_acceptance_ignored": true`, distinct phase-1 and phase-2 process IDs, `COMMITTED` then `DENIED`
+- `proof.py verify` on the `.run` artifact — same acceptance, exit status `0`
+
+P00 LaTeX is not in this repository. `make reproduce-p00` is the harness path (`reproduce-p00-harness`).
+
+## Repository layout
+
+```
+proofs/continuum-persistence-slice/   Decision #2A harness, tests, runbook
+public/proof/continuum-persistence/   Static proof page
+docs/                                 Architecture, capabilities, claims ledger
+artifact/                             P00 claim package (no manuscript TeX)
+backend/                             FastAPI orchestrator (Mongo)
+frontend/                             CRA ops dashboard
+src/, index.html                      Vite landing shell
+packages/                             Vendored lineage (own tests; not in #2A)
+Makefile                              reproduce-p00, verify-evidence, test-p00
+```
+
+## Limits and non-goals
+
+Same-host clean process restart only: two sequential OS processes share one SQLite store; phase 1 exits normally (no kill or crash). The verifier is a separate, internal script by the same author, not third-party verification. The effect is a local, mediated SQLite write, not an external side effect. This does not demonstrate crash recovery, host migration, model/provider replacement, external effects, third-party verification, cryptographic notarization, or production readiness.
+
+Also outside this slice: complete implementation of all seven DCA responsibilities; DCA as an external industry standard; universal security or isolation; live remote computers from the orchestrator.
+
+Ledger: [docs/evidence/CURRENT_CLAIMS_AND_MATURITY_LEDGER.md](docs/evidence/CURRENT_CLAIMS_AND_MATURITY_LEDGER.md).
+
+## Status and roadmap
+
+**Verified:** Decision #2A persistence slice, recomputing verifier, archived artifact from a real run.
+
+**Building:** Mongo orchestrator, ops dashboard, Regency routes, session handoff — [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+
+**Next:** compose vendored lineage into Continuum proofs; crash recovery; host migration; model/provider replacement; multi-VERA coordination; third-party verification; cryptographic notarization; production operations; root license and security policy.
+
+## License, contributing, security
+
+The repository root has no `LICENSE`, `CONTRIBUTING.md`, or `SECURITY.md`.
+
+Some vendored trees ship their own files (MIT under `packages/nexus/LICENSE`, `packages/aeon-iq/LICENSE`, `packages/context-kernel/LICENSE`). Those apply to those trees only.
